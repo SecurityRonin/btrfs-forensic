@@ -336,3 +336,235 @@ fn full_image_chunk_walk_maps_and_reads_root_tree() {
     // Superblock confirmation: fixture and full-image agree.
     let _ = superblock();
 }
+
+// ---- Always-on crafted-image tests for the walk/read_node navigation ----
+//
+// These synthesize a minimal in-memory btrfs image so `ChunkMap::walk` and
+// `read_node` — plus their reachable failure arms — are exercised without the
+// 512 MiB oracle (which is gitignored, so absent in CI). The real oracle is the
+// Tier-1 correctness backstop above; these drive the navigation *logic* over a
+// self-built image (a lower tier, but the geometry is derived, not hardcoded).
+
+const NODESIZE: usize = 16384;
+const SB_OFF: usize = 65536;
+
+/// A leaf-node builder: writes a `btrfs_header` (owner, nritems, level 0) and
+/// item headers + item data, then fixes up the crc32c so the node verifies.
+fn build_leaf(bytenr: u64, owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&bytenr.to_le_bytes());
+    node[0x58..0x60].copy_from_slice(&owner.to_le_bytes());
+    node[0x60..0x64].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    node[0x64] = 0; // leaf
+    let hdr_end = 101usize;
+    let item_stride = 25usize;
+    // Item data grows backward from the node end; data_offset is relative to
+    // hdr_end.
+    let mut data_tail = NODESIZE; // absolute
+    for (i, (oid, ty, koff, data)) in items.iter().enumerate() {
+        let io = hdr_end + i * item_stride;
+        node[io..io + 8].copy_from_slice(&oid.to_le_bytes());
+        node[io + 8] = *ty;
+        node[io + 9..io + 17].copy_from_slice(&koff.to_le_bytes());
+        data_tail -= data.len();
+        let doff = (data_tail - hdr_end) as u32;
+        node[io + 17..io + 21].copy_from_slice(&doff.to_le_bytes());
+        node[io + 21..io + 25].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        node[data_tail..data_tail + data.len()].copy_from_slice(data);
+    }
+    fix_node_crc(&mut node);
+    node
+}
+
+/// Encode a `btrfs_chunk` item body: length/owner/stripe_len/type + stripe(s).
+fn chunk_item(length: u64, chunk_type: u64, stripes: &[(u64, u64)]) -> Vec<u8> {
+    let mut d = vec![0u8; 48 + stripes.len() * 32];
+    d[0..8].copy_from_slice(&length.to_le_bytes());
+    d[8..16].copy_from_slice(&2u64.to_le_bytes()); // owner
+    d[16..24].copy_from_slice(&65536u64.to_le_bytes()); // stripe_len
+    d[24..32].copy_from_slice(&chunk_type.to_le_bytes());
+    d[44..46].copy_from_slice(&(stripes.len() as u16).to_le_bytes());
+    d[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+    for (i, (devid, off)) in stripes.iter().enumerate() {
+        let so = 48 + i * 32;
+        d[so..so + 8].copy_from_slice(&devid.to_le_bytes());
+        d[so + 8..so + 16].copy_from_slice(&off.to_le_bytes());
+    }
+    d
+}
+
+/// Set the node's stored crc32c (first 4 bytes) to the digest over
+/// `[0x20 .. nodesize]`, so `Node::parse` reports `crc_valid == Some(true)`.
+fn fix_node_crc(node: &mut [u8]) {
+    let c = crc32c_iscsi(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+}
+
+fn crc32c_iscsi(buf: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in buf {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// Build a superblock block whose `sys_chunk_array` describes one SYSTEM chunk
+/// `[sys_logical, +sys_len)` mapped identically to physical `sys_logical`, and
+/// whose `chunk_root`/`root`/`nodesize` are set.
+fn build_superblock(chunk_root: u64, root: u64, sys_logical: u64, sys_len: u64) -> Vec<u8> {
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M"); // magic
+    sb[0x30..0x38].copy_from_slice(&65536u64.to_le_bytes()); // bytenr
+    sb[0x58..0x60].copy_from_slice(&chunk_root.to_le_bytes());
+    sb[0x50..0x58].copy_from_slice(&root.to_le_bytes());
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+                                                                      // sys_chunk_array: one [disk_key][chunk+stripe]. key type CHUNK_ITEM=228,
+                                                                      // key.offset = sys_logical. One identity stripe on devid 1.
+    let arr = SB_SYS_ARR;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes()); // objectid FIRST_CHUNK_TREE
+    sb[arr + 8] = 228; // CHUNK_ITEM
+    sb[arr + 9..arr + 17].copy_from_slice(&sys_logical.to_le_bytes());
+    let ci = chunk_item(sys_len, 0x2 /*SYSTEM*/, &[(1, sys_logical)]);
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    let sys_size = (17 + ci.len()) as u32;
+    sb[0xa0..0xa4].copy_from_slice(&sys_size.to_le_bytes()); // sys_chunk_array_size
+    sb
+}
+
+const SB_SYS_ARR: usize = 0x32b;
+
+#[test]
+fn crafted_walk_reads_two_level_chunk_tree_and_maps_addresses() {
+    // Physical layout: SYSTEM chunk [4096, +65536) identity-mapped, so a node at
+    // logical 4096 sits at physical 4096. Put an INTERIOR chunk-tree root there
+    // that points to a leaf at logical 8192 (physical 8192). The leaf carries a
+    // METADATA CHUNK_ITEM [1<<20, +1<<20) -> physical 2<<20. This exercises the
+    // interior-node key_ptr descent inside walk().
+    let chunk_root = 4096u64;
+    let leaf_logical = 8192u64;
+
+    // Interior root: header + 1 key_ptr (key + blockptr=leaf_logical + gen).
+    let mut root_node = vec![0u8; NODESIZE];
+    root_node[0x30..0x38].copy_from_slice(&chunk_root.to_le_bytes());
+    root_node[0x58..0x60].copy_from_slice(&3u64.to_le_bytes()); // CHUNK_TREE
+    root_node[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
+    root_node[0x64] = 1; // interior
+    let p = 101usize;
+    root_node[p..p + 8].copy_from_slice(&256u64.to_le_bytes());
+    root_node[p + 8] = 228;
+    root_node[p + 9..p + 17].copy_from_slice(&(1u64 << 20).to_le_bytes());
+    root_node[p + 17..p + 25].copy_from_slice(&leaf_logical.to_le_bytes()); // blockptr
+    root_node[p + 25..p + 33].copy_from_slice(&5u64.to_le_bytes());
+    fix_node_crc(&mut root_node);
+
+    // Leaf with one METADATA CHUNK_ITEM.
+    let meta = chunk_item(1u64 << 20, 0x24, &[(1, 2u64 << 20)]);
+    let leaf = build_leaf(leaf_logical, 3, &[(256, 228, 1u64 << 20, meta)]);
+
+    // Assemble the image: superblock at 0x10000, root node @4096, leaf @8192.
+    let sb_block = build_superblock(chunk_root, 1u64 << 20, 4096, 65536);
+    let mut img = vec![0u8; SB_OFF + BTRFS_SUPER_INFO_SIZE];
+    img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb_block);
+    // Grow the image to hold the physical placements.
+    let need = (2u64 << 20) as usize + (1u64 << 20) as usize;
+    if img.len() < need {
+        img.resize(need, 0);
+    }
+    img[4096..4096 + NODESIZE].copy_from_slice(&root_node);
+    img[8192..8192 + NODESIZE].copy_from_slice(&leaf);
+
+    let sb = Superblock::parse(&img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE]).unwrap();
+    let map = ChunkMap::walk(&img, &sb).expect("crafted chunk-tree walk");
+
+    // The METADATA chunk maps logical 1<<20 -> physical 2<<20.
+    assert_eq!(
+        map.logical_to_physical(1u64 << 20),
+        Some((1, 2u64 << 20)),
+        "walk followed the interior key_ptr into the leaf and mapped its chunk"
+    );
+
+    // read_node reads the leaf by its logical address (via the map).
+    let node = btrfs_core::read_node(&img, &sb, &map, leaf_logical).expect("read leaf via map");
+    assert_eq!(node.header.owner, 3);
+    assert!(node.is_leaf());
+}
+
+#[test]
+fn walk_fails_loud_when_bootstrap_does_not_cover_chunk_root() {
+    // chunk_root logical 999999 lies OUTSIDE the sys_chunk_array's SYSTEM span
+    // [4096, +65536): the bootstrap cannot translate it, so walk must return a
+    // loud Truncated error naming the offending logical addr — never an empty
+    // map (the Paranoid-Gatekeeper bootstrap rule).
+    let sb_block = build_superblock(999_999, 1u64 << 20, 4096, 65536);
+    let mut img = vec![0u8; SB_OFF + BTRFS_SUPER_INFO_SIZE];
+    img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb_block);
+    let sb = Superblock::parse(&img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE]).unwrap();
+
+    let err = ChunkMap::walk(&img, &sb).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("chunk_root logical"),
+        "bootstrap miss is a loud, named failure, got {err:?}"
+    );
+}
+
+#[test]
+fn walk_fails_loud_when_chunk_root_node_is_out_of_image() {
+    // The bootstrap maps chunk_root (logical == sys_logical == 1<<30) identically
+    // to physical 1<<30, which lies far past the small image: walk must fail loud
+    // ("out of image"), never return an empty map.
+    let far = 1u64 << 30;
+    let sb_block = build_superblock(far, 1u64 << 20, far, 65536);
+    let mut img = vec![0u8; SB_OFF + BTRFS_SUPER_INFO_SIZE];
+    img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb_block);
+    let sb = Superblock::parse(&img[SB_OFF..SB_OFF + BTRFS_SUPER_INFO_SIZE]).unwrap();
+
+    let err = ChunkMap::walk(&img, &sb).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("out of image"),
+        "chunk_root out-of-image is a loud failure, got {err:?}"
+    );
+}
+
+#[test]
+fn read_node_errors_when_logical_has_no_mapping() {
+    let sb_block = build_superblock(4096, 1u64 << 20, 4096, 65536);
+    let sb = Superblock::parse(&sb_block).unwrap();
+    let img = vec![0u8; 1 << 20];
+    let map = ChunkMap::new(); // empty map, and 999999 is outside sys_chunks too
+    let err = btrfs_core::read_node(&img, &sb, &map, 999_999).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("no chunk mapping"),
+        "unmapped logical is a named error, got {err:?}"
+    );
+}
+
+#[test]
+fn read_node_errors_when_block_is_out_of_image() {
+    // sys_chunks maps logical 4096 -> physical 4096 (identity), but the image is
+    // too small to hold a node there.
+    let sb_block = build_superblock(4096, 1u64 << 20, 4096, 65536);
+    let sb = Superblock::parse(&sb_block).unwrap();
+    let img = vec![0u8; 4096]; // physical 4096 + nodesize is out of range
+    let map = ChunkMap::new();
+    // read_node falls back to the sys_chunk_array bootstrap for logical 4096.
+    let err = btrfs_core::read_node(&img, &sb, &map, 4096).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("out of image"),
+        "out-of-image node is a named error, got {err:?}"
+    );
+}
+
+#[test]
+fn key_ptrs_on_a_leaf_is_empty() {
+    // The leaf fixture has no key-pointers.
+    let node = Node::parse(&chunk_root_node()).unwrap();
+    assert!(node.key_ptrs().is_empty(), "a leaf exposes no key_ptrs");
+}
