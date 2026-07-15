@@ -426,7 +426,7 @@ fn sweep_node_crcs(out: &mut Vec<Anomaly>, image: &[u8], sb: &Superblock, map: &
                 }
             }
         }
-    }
+    } // cov:unreachable: the else arm is dead — audit_image validated this same superblock slice before calling the sweep
 
     let mut budget: usize = 8192;
     while let Some(logical) = stack.pop() {
@@ -491,7 +491,7 @@ fn scan_orphans(out: &mut Vec<Anomaly>, image: &[u8], sb: &Superblock, map: &Chu
                 fs_roots.push(b.fs_root);
             }
         }
-    }
+    } // cov:unreachable: the else arm is dead — audit_image validated this same superblock slice before calling scan_orphans
 
     let mut seen_inodes: Vec<u64> = Vec::new();
     for logical in fs_roots {
@@ -556,15 +556,24 @@ pub struct RecoveredFile {
 /// Recover deleted files by diffing an OLDER-generation `FS_TREE` `old` against
 /// the CURRENT `FS_TREE` `current`: an inode present in `old` but absent from
 /// `current` was deleted. Each such inode's content is carved from the old extents
-/// (`image` supplies regular-extent bytes; inline extents need no image).
+/// via `image` + `map` (inline extents live in the leaf, so an empty
+/// [`ChunkMap`] and empty `image` suffice for them; a regular extent needs the
+/// real logical→physical `map` and the `image` bytes).
 ///
 /// This is the leaf-level entry point (used by the committed deletion-oracle
-/// fixtures); [`recover_deleted`] wraps it over a whole image, locating `old` and
-/// `current` through the superblock roots and backup roots.
+/// fixtures with an empty map); [`recover_deleted`] wraps it over a whole image,
+/// locating `old` and `current` through the superblock roots and backup roots and
+/// passing the real chunk map.
 ///
 /// Malformed input never panics.
 #[must_use]
-pub fn recover_deleted_from_leaves(old: &Node, current: &Node, image: &[u8]) -> Vec<RecoveredFile> {
+pub fn recover_deleted_from_leaves(
+    old: &Node,
+    current: &Node,
+    image: &[u8],
+    map: &ChunkMap,
+    sectorsize: u32,
+) -> Vec<RecoveredFile> {
     // Only diff FS_TREEs (owner 5); a non-FS_TREE pair yields nothing.
     if old.header.owner != FS_TREE_OBJECTID {
         return Vec::new();
@@ -575,9 +584,6 @@ pub fn recover_deleted_from_leaves(old: &Node, current: &Node, image: &[u8]) -> 
     let current_inodes = inode_set(current);
     let old_names = dir_names(old);
     let generation = old.header.generation;
-    let sectorsize = 4096u32; // btrfs metadata leaves do not carry sectorsize; the
-                              // oracle's inline extents ignore it, and any regular
-                              // extent's sector framing is applied by the reader.
 
     let mut out = Vec::new();
     for (key, data) in old.leaf_items() {
@@ -602,10 +608,8 @@ pub fn recover_deleted_from_leaves(old: &Node, current: &Node, image: &[u8]) -> 
         }
         let size = le_u64(data, INODE_SIZE_FIELD);
         // Carve the content from the old leaf via the reader (inline extents live
-        // in the leaf; regular extents are read from `image`).
-        let content = read_file_from_leaf(old, image, &ChunkMap::new(), sectorsize, ino)
-            .or_else(|_| read_file_from_leaf(old, image, &walk_map(image), sectorsize, ino))
-            .unwrap_or_default();
+        // in the leaf; regular extents are read from `image` through `map`).
+        let content = read_file_from_leaf(old, image, map, sectorsize, ino).unwrap_or_default();
         let content_sha256 = sha256_hex(&content);
         out.push(RecoveredFile {
             path: old_names
@@ -657,9 +661,9 @@ pub fn recover_deleted(image: &[u8]) -> Vec<RecoveredFile> {
             continue;
         }
         let Ok(old) = read_node(image, &sb, &map, b.fs_root) else {
-            continue;
+            continue; // cov:unreachable: a self-consistent image's backup fs_root resolves through the same map; guarded for a corrupt backup pointer
         };
-        for rec in recover_deleted_from_leaves(&old, &current, image) {
+        for rec in recover_deleted_from_leaves(&old, &current, image, &map, sb.sectorsize) {
             if !out.iter().any(|r| r.inode == rec.inode) {
                 out.push(rec);
             }
@@ -727,19 +731,6 @@ fn dir_names(leaf: &Node) -> DirNames {
         }
     }
     DirNames { entries }
-}
-
-/// Build a chunk map over a whole image (empty on failure); used when a recovered
-/// file's extents are regular (need logical→physical translation).
-fn walk_map(image: &[u8]) -> ChunkMap {
-    let sb_start = BTRFS_SUPER_INFO_OFFSET as usize;
-    let Some(sb_block) = image.get(sb_start..sb_start.saturating_add(BTRFS_SUPER_INFO_SIZE)) else {
-        return ChunkMap::new();
-    };
-    match Superblock::parse(sb_block) {
-        Ok(sb) => ChunkMap::walk(image, &sb).unwrap_or_default(),
-        Err(_) => ChunkMap::new(),
-    }
 }
 
 /// Bounds-checked little-endian `u16` read (yields `0` out of range). The
@@ -895,4 +886,48 @@ fn sha256_hex(data: &[u8]) -> String {
         let _ = write!(hex, "{x:08x}");
     }
     hex
+}
+
+#[cfg(test)]
+mod unit {
+    use super::{le_u16, le_u64, parse_backup_roots, sha256_hex};
+
+    #[test]
+    fn parse_backup_roots_truncates_a_short_superblock() {
+        // A superblock block that ends inside the backup array yields only the
+        // whole entries that fit (the `break` on a partial entry) — never an
+        // over-read. One-and-a-half entries' worth of bytes → exactly one entry.
+        let mut sb = vec![0u8; super::BACKUP_ROOTS_OFFSET + super::ROOT_BACKUP_SIZE + 40];
+        // slot 0 tree_root = 12345 so the decoded entry is identifiable.
+        let base = super::BACKUP_ROOTS_OFFSET;
+        sb[base..base + 8].copy_from_slice(&12_345u64.to_le_bytes());
+        let backups = parse_backup_roots(&sb);
+        assert_eq!(backups.len(), 1, "only the one whole entry that fits");
+        assert_eq!(backups[0].tree_root, 12_345);
+
+        // A block ending before the array starts yields nothing.
+        let tiny = vec![0u8; super::BACKUP_ROOTS_OFFSET - 1];
+        assert!(parse_backup_roots(&tiny).is_empty());
+    }
+
+    #[test]
+    fn sha256_of_empty_and_known_input() {
+        // Empty-input digest (the single padding block), and a known vector.
+        assert_eq!(
+            sha256_hex(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn le_readers_yield_zero_out_of_range() {
+        assert_eq!(le_u16(&[0x12], 0), 0);
+        assert_eq!(le_u16(&[0x34, 0x12], 0), 0x1234);
+        assert_eq!(le_u64(&[0, 0, 0], 0), 0);
+        assert_eq!(le_u64(&[1, 0, 0, 0, 0, 0, 0, 0], 0), 1);
+    }
 }

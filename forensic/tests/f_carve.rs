@@ -31,7 +31,7 @@
 
 use std::path::PathBuf;
 
-use btrfs_core::Node;
+use btrfs_core::{ChunkMap, Node};
 use btrfs_forensic::{recover_deleted_from_leaves, RecoveredFile};
 
 /// Pre-delete sha256 of `secret.txt` (80 bytes), captured at mint on the VM
@@ -62,7 +62,8 @@ fn recovers_deleted_inline_file_from_old_generation_leaf() {
 
     // No image bytes are needed for an inline extent — its content lives in the
     // old FS_TREE leaf itself.
-    let recovered: Vec<RecoveredFile> = recover_deleted_from_leaves(&old, &current, &[]);
+    let recovered: Vec<RecoveredFile> =
+        recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096);
 
     let hit = recovered
         .iter()
@@ -92,7 +93,7 @@ fn kept_file_is_not_reported_as_deleted() {
     // a deleted file (the diff only surfaces old-minus-current inodes).
     let old = Node::parse(&data("btrfs_del_old_fs_tree_leaf.bin")).unwrap();
     let current = Node::parse(&data("btrfs_del_current_fs_tree_leaf.bin")).unwrap();
-    let recovered = recover_deleted_from_leaves(&old, &current, &[]);
+    let recovered = recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096);
     assert!(
         recovered.iter().all(|r| r.inode != 258),
         "keep.txt (still present) must not be reported as deleted"
@@ -105,7 +106,7 @@ fn kept_file_is_not_reported_as_deleted() {
 fn identical_leaves_recover_nothing() {
     // Diffing a leaf against itself yields no deleted files.
     let old = Node::parse(&data("btrfs_del_old_fs_tree_leaf.bin")).unwrap();
-    let recovered = recover_deleted_from_leaves(&old, &old, &[]);
+    let recovered = recover_deleted_from_leaves(&old, &old, &[], &ChunkMap::new(), 4096);
     assert!(
         recovered.is_empty(),
         "no deletions between identical leaves"
@@ -129,13 +130,192 @@ fn full_image_recovers_deleted_file() {
     assert_eq!(hit.content_sha256, DELETED_SECRET_SHA256);
 }
 
+// ── branch coverage over crafted leaves ───────────────────────────────────────
+
+const NODESIZE: usize = 16_384;
+const HDR_END: usize = 101;
+const ITEM_STRIDE: usize = 25;
+
+/// crc32c (Castagnoli/iSCSI), used to seal a crafted node.
+fn crc32c(buf: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in buf {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// Build an FS_TREE-style leaf (owner configurable) with items laid out backward
+/// from the node end and a fixed-up crc32c. `items` are `(objectid, type, offset,
+/// data)`.
+fn build_leaf(owner: u64, generation: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&30_654_464u64.to_le_bytes()); // bytenr
+    node[0x50..0x58].copy_from_slice(&generation.to_le_bytes());
+    node[0x58..0x60].copy_from_slice(&owner.to_le_bytes());
+    node[0x60..0x64].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    node[0x64] = 0; // leaf
+    let mut tail = NODESIZE;
+    for (i, (oid, ty, koff, data)) in items.iter().enumerate() {
+        let io = HDR_END + i * ITEM_STRIDE;
+        node[io..io + 8].copy_from_slice(&oid.to_le_bytes());
+        node[io + 8] = *ty;
+        node[io + 9..io + 17].copy_from_slice(&koff.to_le_bytes());
+        tail -= data.len();
+        let doff = (tail - HDR_END) as u32;
+        node[io + 17..io + 21].copy_from_slice(&doff.to_le_bytes());
+        node[io + 21..io + 25].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        node[tail..tail + data.len()].copy_from_slice(data);
+    }
+    let c = crc32c(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+    node
+}
+
+/// A 160-byte INODE_ITEM with `size` at offset 16.
+fn inode_item(size: u64) -> Vec<u8> {
+    let mut d = vec![0u8; 160];
+    d[16..24].copy_from_slice(&size.to_le_bytes());
+    d
+}
+
+/// An inline EXTENT_DATA (type 0) carrying `payload` (ram_bytes = payload.len()).
+fn inline_extent(payload: &[u8]) -> Vec<u8> {
+    let mut d = vec![0u8; 21 + payload.len()];
+    d[8..16].copy_from_slice(&(payload.len() as u64).to_le_bytes()); // ram_bytes
+    d[20] = 0; // inline
+    d[21..].copy_from_slice(payload);
+    d
+}
+
+/// A DIR_ITEM body: location key[17] + transid(8) + data_len(2) + name_len(2) +
+/// type(1) + name.
+fn dir_item(child: u64, name: &[u8]) -> Vec<u8> {
+    let mut d = vec![0u8; 30 + name.len()];
+    d[0..8].copy_from_slice(&child.to_le_bytes());
+    d[8] = 1; // INODE_ITEM
+    d[27..29].copy_from_slice(&(name.len() as u16).to_le_bytes());
+    d[29] = 1; // REG_FILE
+    d[30..].copy_from_slice(name);
+    d
+}
+
+const INODE_ITEM_KEY: u8 = 1;
+const EXTENT_DATA_KEY: u8 = 108;
+const DIR_ITEM_KEY: u8 = 84;
+const FS_TREE_OBJECTID: u64 = 5;
+const CHUNK_TREE_OBJECTID: u64 = 3;
+
+#[test]
+fn non_fs_tree_leaf_pair_recovers_nothing() {
+    // A non-FS_TREE owner (chunk tree, owner 3) short-circuits the diff.
+    let old = Node::parse(&build_leaf(CHUNK_TREE_OBJECTID, 7, &[])).unwrap();
+    let current = Node::parse(&build_leaf(CHUNK_TREE_OBJECTID, 8, &[])).unwrap();
+    assert!(recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096).is_empty());
+}
+
+#[test]
+fn deleted_inode_without_extent_data_is_not_carved() {
+    // Inode 300 present in old (with a name + INODE_ITEM but NO EXTENT_DATA — a
+    // deleted directory or metadata-only inode) and absent in current: it must
+    // NOT be reported (nothing to carve), exercising the no-EXTENT_DATA branch.
+    let old = build_leaf(
+        FS_TREE_OBJECTID,
+        7,
+        &[
+            (256, DIR_ITEM_KEY, 111, dir_item(300, b"emptydir")),
+            (300, INODE_ITEM_KEY, 0, inode_item(0)),
+        ],
+    );
+    let current = build_leaf(FS_TREE_OBJECTID, 8, &[]);
+    let old = Node::parse(&old).unwrap();
+    let current = Node::parse(&current).unwrap();
+    let recovered = recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096);
+    assert!(
+        recovered.iter().all(|r| r.inode != 300),
+        "an inode with no EXTENT_DATA has nothing to carve"
+    );
+}
+
+#[test]
+fn deleted_inode_without_dir_name_falls_back_to_synthetic_name() {
+    // Inode 301 deleted (INODE_ITEM + inline EXTENT_DATA) but with NO DIR_ITEM
+    // naming it in the old leaf: the recovered path falls back to `inode_301`,
+    // exercising the name-fallback branch.
+    let payload = b"orphaned content no name";
+    let old = build_leaf(
+        FS_TREE_OBJECTID,
+        7,
+        &[
+            (301, INODE_ITEM_KEY, 0, inode_item(payload.len() as u64)),
+            (301, EXTENT_DATA_KEY, 0, inline_extent(payload)),
+        ],
+    );
+    let current = build_leaf(FS_TREE_OBJECTID, 8, &[]);
+    let old = Node::parse(&old).unwrap();
+    let current = Node::parse(&current).unwrap();
+    let recovered = recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096);
+    let hit = recovered.iter().find(|r| r.inode == 301).unwrap();
+    assert_eq!(hit.path, "inode_301", "no dir entry → synthetic name");
+    assert_eq!(hit.content, payload);
+}
+
+#[test]
+fn dir_names_skips_a_truncated_dir_item() {
+    // A DIR_ITEM shorter than the 30-byte fixed prefix is skipped by the name
+    // decoder (no over-read); the deleted inode still recovers with a synthetic
+    // name. Exercises the too-short dir-item branch in dir_names.
+    let payload = b"content";
+    let old = build_leaf(
+        FS_TREE_OBJECTID,
+        7,
+        &[
+            (256, DIR_ITEM_KEY, 111, vec![0u8; 10]), // too short (< 30)
+            (302, INODE_ITEM_KEY, 0, inode_item(payload.len() as u64)),
+            (302, EXTENT_DATA_KEY, 0, inline_extent(payload)),
+        ],
+    );
+    let current = build_leaf(FS_TREE_OBJECTID, 8, &[]);
+    let old = Node::parse(&old).unwrap();
+    let current = Node::parse(&current).unwrap();
+    let recovered = recover_deleted_from_leaves(&old, &current, &[], &ChunkMap::new(), 4096);
+    let hit = recovered.iter().find(|r| r.inode == 302).unwrap();
+    assert_eq!(hit.content, payload);
+}
+
+#[test]
+fn recover_deleted_valid_superblock_but_unreadable_root_tree_returns_empty() {
+    // A valid btrfs superblock (the committed deletion-oracle SB parses) placed in
+    // an image with NO tree nodes: the chunk-tree walk / root-tree read fail, so
+    // recover_deleted returns empty rather than panicking (the fs_tree_root-Err
+    // branch of the whole-image path).
+    let sb = data("btrfs_del_superblock.bin");
+    let mut img = vec![0u8; 65_536 + 4096 + 64 * 1024 * 1024];
+    img[65_536..65_536 + 4096].copy_from_slice(&sb);
+    assert!(
+        btrfs_forensic::recover_deleted(&img).is_empty(),
+        "a superblock with no reachable root tree recovers nothing"
+    );
+}
+
 // ── robustness: malformed input never panics ──────────────────────────────────
 
 #[test]
 fn recover_deleted_malformed_input_does_not_panic() {
+    // Empty, too-short, and a wrong-magic buffer long enough to hold the
+    // superblock block (exercises the whole-image parse-Err branches).
     assert!(btrfs_forensic::recover_deleted(&[]).is_empty());
     assert!(btrfs_forensic::recover_deleted(&[0u8; 32]).is_empty());
     assert!(btrfs_forensic::recover_deleted(b"not btrfs").is_empty());
+    let long_wrong_magic = vec![0u8; 65_536 + 4096 + 16_384];
+    assert!(btrfs_forensic::recover_deleted(&long_wrong_magic).is_empty());
 }
 
 /// A minimal, self-contained SHA-256 for the independent re-hash assertion (the

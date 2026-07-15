@@ -365,6 +365,96 @@ md5sum fedora-btrfs.raw                                 # 2e91a6d3...066d
 BTRFS_FEDORA_ORACLE=/tmp/btrfs_fedora/fedora-btrfs.raw cargo test -p btrfs-core --test tier1_fedora
 ```
 
+## Deletion oracle — CoW deleted-file recovery (REAL-self / Tier-2)
+
+The `btrfs-forensic` **F-CARVE** analyzer recovers a deleted file by diffing an
+older-generation `FS_TREE` (reached through the superblock `btrfs_root_backup[4]`
+array) against the current `FS_TREE`. That needs an image where a file was
+written, committed, then deleted — the base oracle above has no deletion, so a
+**separate deletion oracle** was minted.
+
+btrfs is copy-on-write: after `rm` + `sync`, the pre-delete `FS_TREE` root stays
+referenced in a backup slot, and (for an inline extent) the deleted file's
+content is still present inside that old leaf. This is a **Tier-2** oracle — real
+`mkfs.btrfs`/kernel output, independently decoded by `btrfs inspect-internal`,
+but we chose the deletion scenario.
+
+### Minting host
+
+- Parallels VM `Ubuntu 24.04 (with Rosetta)`, `Linux 6.8.0-86-generic aarch64`.
+- `btrfs-progs v6.6.3`. Host `/tmp` shared into the VM at `/media/psf/tmp`.
+
+### Verbatim mint commands
+
+```bash
+W=/root/btrfs_del; rm -rf "$W"; mkdir -p "$W"; cd "$W"
+dd if=/dev/zero of=del.img bs=1M count=256 status=none
+mkfs.btrfs -f -L BTRFS_DELORACLE --csum crc32c del.img
+mkdir -p /mnt/btrfs-del && mount -o loop del.img /mnt/btrfs-del
+
+# Write the known file (recorded sha256) + a survivor, then sync (commits gen 7).
+printf 'SECRET btrfs deleted-file recovery oracle payload \xe2\x80\x94 CoW retains the old root.\n' \
+  > /mnt/btrfs-del/secret.txt
+printf 'this file stays.\n' > /mnt/btrfs-del/keep.txt
+sync; btrfs filesystem sync /mnt/btrfs-del
+sha256sum /mnt/btrfs-del/secret.txt    # 4fce0707...e8d312 (the PRE-DELETE gate hash)
+
+# Delete secret.txt and sync — CoW writes a new FS_TREE (gen 8); the gen-7 FS_TREE
+# root (bytenr 30507008) remains referenced in a backup slot and still holds
+# inode 257 (secret.txt) + its inline extent.
+rm -f /mnt/btrfs-del/secret.txt
+sync; btrfs filesystem sync /mnt/btrfs-del
+umount /mnt/btrfs-del
+
+# Extract the committed always-on fixtures (small metadata nodes; the 256 MiB
+# del.img itself is NOT committed — gitignored, provenance only).
+# METADATA chunk: logical [30408704,+33554432) -> first stripe physical 38797312.
+dd if=del.img bs=1 skip=65536   count=4096  of=btrfs_del_superblock.bin        status=none
+dd if=del.img bs=1 skip=38895616 count=16384 of=btrfs_del_old_fs_tree_leaf.bin     status=none  # logical 30507008 (gen 7)
+dd if=del.img bs=1 skip=39075840 count=16384 of=btrfs_del_current_fs_tree_leaf.bin status=none  # logical 30687232 (gen 8)
+btrfs inspect-internal dump-super -f          del.img > btrfs_del.dump-super.txt
+btrfs inspect-internal dump-tree -b 30507008  del.img > btrfs_del.old-fs-tree.txt
+btrfs inspect-internal dump-tree -b 30687232  del.img > btrfs_del.current-fs-tree.txt
+```
+
+### Ground truth (independent `btrfs inspect-internal` oracle)
+
+| field | value |
+|---|---|
+| deleted file | `secret.txt`, inode **257**, size **80**, **inline** extent (type 0, comp none) |
+| **pre-delete sha256** (the F-CARVE gate) | `4fce0707f6dbddc3e37931fd76044862979ddca3d80b97e338197f8995e8d312` |
+| old (pre-delete) `FS_TREE` root | logical **30507008**, gen **7**, 12 items — has inode 257 |
+| current `FS_TREE` root | logical **30687232**, gen **8**, 7 items — inode 257 GONE (`keep.txt`/258 survives) |
+| `btrfs_root_backup[4]` array offset | superblock byte **0xb2b**, 4 × 168-byte entries (verified vs `dump-super -f`) |
+
+The gen-7 `backup_fs_root` (30507008) is where the diff finds inode 257 present
+while the current tree lacks it → deleted; its inline content carves to the
+pre-delete sha256, both from the committed leaf fixtures and (env-gated
+`BTRFS_DEL_ORACLE`) the whole 256 MiB image via the backup-root path.
+
+**Honest recovery caveat.** This recovery succeeds because the current kernel
+retained the gen-7 `FS_TREE` root in a backup slot AND the deleted file was
+**inline** (its bytes live in the old leaf, so no data-chunk extent had to
+survive un-overwritten). A regular (non-inline) deleted extent recovers only
+while its data chunk is un-overwritten; a re-mint on a different kernel may not
+always retain the same backup roots. `recover_deleted` returns nothing (never a
+fabricated result) when no older `FS_TREE` root is retained.
+
+### Deletion-oracle committed files
+
+| file | md5 | oracle | anchors |
+|---|---|---|---|
+| `btrfs_del_superblock.bin` (4096 B) | `a41679c2a57b0d5faa463c5917d32409` | `dd skip=65536 count=4096` | F-CARVE whole-image entry (env-gated) |
+| `btrfs_del_old_fs_tree_leaf.bin` (16384 B) | `8f8f78a569a89a454a3790e0e8ce598d` | `dd skip=38895616 count=16384` | **F-CARVE always-on gate** (pre-delete FS_TREE leaf) |
+| `btrfs_del_current_fs_tree_leaf.bin` (16384 B) | `18386430f75512a38310ec6aec70c98c` | `dd skip=39075840 count=16384` | **F-CARVE always-on gate** (current FS_TREE leaf) |
+| `btrfs_del.dump-super.txt` | — | `dump-super -f` | backup-roots ground truth |
+| `btrfs_del.old-fs-tree.txt` / `btrfs_del.current-fs-tree.txt` | — | `dump-tree` | old/current FS_TREE ground truth |
+
+Full deletion image (gitignored, provenance only): `md5 del.img
+a324b52d8e73df339f584859c6491ed4`, 268435456 bytes. Consumed by the env-gated
+`full_image_recovers_deleted_file` / `full_image_audit_scans_real_fs_tree_for_orphans`
+tests via `BTRFS_DEL_ORACLE`.
+
 ## Committed files (index)
 
 | file | oracle | anchors |

@@ -338,3 +338,194 @@ fn superblock_parse_over_whole_image_is_sound() {
     let sb = Superblock::parse(&img[start..start + BTRFS_SUPER_INFO_SIZE]).unwrap();
     assert_eq!(sb.generation, 9);
 }
+
+#[test]
+fn superblock_present_but_wrong_magic_yields_no_findings() {
+    // A buffer long enough to hold the superblock block, but whose bytes at 0x40
+    // are not "_BHRfS_M": Superblock::parse fails and audit_image returns empty
+    // (the parse-Err early return), never panicking.
+    let img = vec![0u8; 65_536 + 4096 + 16_384];
+    assert!(audit_image(&img).is_empty());
+}
+
+#[test]
+fn zero_root_logical_is_not_a_geometry_error() {
+    // Set the superblock `root` (offset 0x50) to 0 ("none"): check_root_reachable
+    // must treat 0 as absent, not an impossible-geometry finding.
+    let mut img = base_image();
+    let root_off = 65_536 + 0x50;
+    img[root_off..root_off + 8].copy_from_slice(&0u64.to_le_bytes());
+    let sect = 4096usize;
+    reseal_sb(&mut img[65_536..65_536 + sect], sect);
+    let anomalies = audit_image(&img);
+    // No ImpossibleGeometry for `root` (0 is "none").
+    assert!(
+        !anomalies.iter().any(|a| matches!(
+            &a.kind,
+            AnomalyKind::ImpossibleGeometry { field, .. } if *field == "root"
+        )),
+        "root == 0 must not flag impossible geometry, got: {anomalies:?}"
+    );
+}
+
+#[test]
+fn backup_fs_root_gen_newer_flags_divergence() {
+    // Diverge only the fs_root_gen of a backup slot (keep tree_root_gen sane) to
+    // exercise the fs_root-generation branch of check_backup_roots.
+    let mut img = base_image();
+    let sb_gen_off = 65_536 + 0x48;
+    let cur_gen = u64::from_le_bytes(img[sb_gen_off..sb_gen_off + 8].try_into().unwrap());
+    // backup[1].fs_root_gen is at +48+8 = +56 within slot 1 (offset 0xb2b + 168).
+    let slot1 = 65_536 + 0xb2b + 168;
+    let fs_gen_off = slot1 + 56;
+    img[fs_gen_off..fs_gen_off + 8].copy_from_slice(&(cur_gen + 3).to_le_bytes());
+    let sect = 4096usize;
+    reseal_sb(&mut img[65_536..65_536 + sect], sect);
+    let anomalies = audit_image(&img);
+    assert!(
+        anomalies.iter().any(|a| matches!(
+            &a.kind,
+            AnomalyKind::BackupRootDivergence { reason, .. }
+                if reason.contains("fs_root generation")
+        )),
+        "expected fs_root-generation divergence, got: {anomalies:?}"
+    );
+}
+
+#[test]
+fn backup_tree_root_past_image_flags_divergence() {
+    // A backup tree_root logical address past the end of the image, with sane
+    // generations, exercises the "tree_root past image" branch.
+    let mut img = base_image();
+    // backup[2].tree_root is at slot 2 offset +0 (0xb2b + 2*168).
+    let slot2 = 65_536 + 0xb2b + 2 * 168;
+    let huge = (img.len() as u64) + 1_000_000;
+    img[slot2..slot2 + 8].copy_from_slice(&huge.to_le_bytes());
+    let sect = 4096usize;
+    reseal_sb(&mut img[65_536..65_536 + sect], sect);
+    let anomalies = audit_image(&img);
+    assert!(
+        anomalies.iter().any(|a| matches!(
+            &a.kind,
+            AnomalyKind::BackupRootDivergence { reason, .. }
+                if reason.contains("past the end of the image")
+        )),
+        "expected tree_root-past-image divergence, got: {anomalies:?}"
+    );
+}
+
+// ── interior-node descent: a corrupt CHILD leaf under an interior root ────────
+//
+// The self-mint's trees are single leaves, so the sweep's interior-descent path
+// (following key-pointers to children) has no real fixture. This crafts a minimal
+// self-contained image: a superblock whose sys_chunk_array identity-maps a SYSTEM
+// chunk, an INTERIOR node (level 1) at `sb.root` whose key-pointer references a
+// CHILD leaf, and that child leaf carries a broken crc32c. The sweep must descend
+// the interior node to reach and flag the child (BTRFS-CRC-MISMATCH).
+
+const NODESIZE: usize = 16_384;
+
+/// A crc32c-sealed node header at logical `bytenr`, `level`, `nritems`, owner 5.
+fn node_header(block: &mut [u8], bytenr: u64, level: u8, nritems: u32, fsid: &[u8; 16]) {
+    block[0x20..0x30].copy_from_slice(fsid);
+    block[0x30..0x38].copy_from_slice(&bytenr.to_le_bytes());
+    block[0x58..0x60].copy_from_slice(&5u64.to_le_bytes()); // owner FS_TREE
+    block[0x60..0x64].copy_from_slice(&nritems.to_le_bytes());
+    block[0x64] = level;
+}
+
+fn seal_node(block: &mut [u8]) {
+    let c = crc32c(&block[0x20..]);
+    block[0..4].copy_from_slice(&c.to_le_bytes());
+}
+
+#[test]
+fn interior_node_descent_reaches_a_corrupt_child_leaf() {
+    // Identity-mapped geometry: logical == physical for the whole image via one
+    // SYSTEM chunk spanning [0, sys_len).
+    let root_logical = 100 * NODESIZE as u64; // interior node's logical addr
+    let child_logical = 101 * NODESIZE as u64; // child leaf's logical addr
+    let sys_len = 200 * NODESIZE as u64;
+    let fsid = [0xAB; 16];
+
+    // Superblock @ 0x10000.
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x20..0x30].copy_from_slice(&fsid);
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65_536u64.to_le_bytes()); // bytenr
+    sb[0x48..0x50].copy_from_slice(&9u64.to_le_bytes()); // generation
+    sb[0x50..0x58].copy_from_slice(&root_logical.to_le_bytes()); // root
+    sb[0x58..0x60].copy_from_slice(&22_020_096u64.to_le_bytes()); // chunk_root (unused: sys bootstrap)
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+                                                                      // sys_chunk_array: one CHUNK_ITEM identity-mapping [0, sys_len).
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes()); // FIRST_CHUNK_TREE
+    sb[arr + 8] = 228; // CHUNK_ITEM
+    sb[arr + 9..arr + 17].copy_from_slice(&0u64.to_le_bytes()); // chunk logical start 0
+    let ci = {
+        let mut d = vec![0u8; 48 + 32];
+        d[0..8].copy_from_slice(&sys_len.to_le_bytes()); // length
+        d[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // SYSTEM
+        d[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+        d[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+        d[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+        d[56..64].copy_from_slice(&0u64.to_le_bytes()); // stripe offset 0 (identity)
+        d
+    };
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes()); // sys_array_size
+                                                                             // Seal the superblock over [0x20 .. sectorsize].
+    reseal_sb(&mut sb, 4096);
+
+    // Interior node (level 1) at root_logical: one key-pointer to child_logical.
+    // btrfs_key_ptr = disk_key[17] + blockptr(u64) + generation(u64) at header end.
+    let mut interior = vec![0u8; NODESIZE];
+    node_header(&mut interior, root_logical, 1, 1, &fsid);
+    let hdr = 101usize;
+    interior[hdr + 17..hdr + 25].copy_from_slice(&child_logical.to_le_bytes()); // blockptr
+    seal_node(&mut interior);
+
+    // Child leaf at child_logical with a DELIBERATELY broken crc32c (seal, then
+    // flip a body byte so the stored digest no longer matches).
+    let mut child = vec![0u8; NODESIZE];
+    node_header(&mut child, child_logical, 0, 0, &fsid);
+    seal_node(&mut child);
+    child[500] ^= 0xFF; // break the body after sealing
+
+    // Assemble the identity-mapped image.
+    let end = (child_logical as usize) + NODESIZE;
+    let mut img = vec![0u8; end.max(65_536 + BTRFS_SUPER_INFO_SIZE)];
+    img[65_536..65_536 + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb);
+    img[root_logical as usize..root_logical as usize + NODESIZE].copy_from_slice(&interior);
+    img[child_logical as usize..child_logical as usize + NODESIZE].copy_from_slice(&child);
+
+    let anomalies = audit_image(&img);
+    assert!(
+        anomalies.iter().any(|a| matches!(
+            &a.kind,
+            AnomalyKind::NodeCrcMismatch { bytenr, .. } if *bytenr == child_logical
+        )),
+        "the sweep must descend the interior node to flag the corrupt child leaf, got: {anomalies:?}"
+    );
+}
+
+// ── env-gated whole-image audit over the deletion oracle (real root tree) ─────
+
+#[test]
+fn full_image_audit_scans_real_fs_tree_for_orphans() {
+    let Ok(path) = std::env::var("BTRFS_DEL_ORACLE") else {
+        eprintln!("skip: BTRFS_DEL_ORACLE unset");
+        return;
+    };
+    let img = std::fs::read(&path).expect("read BTRFS_DEL_ORACLE");
+    // The deletion oracle is a genuine, clean btrfs image (no crafted corruption):
+    // audit_image walks its real root tree + backup roots. It has no ORPHAN_ITEMs
+    // and no crafted corruption, so a clean audit is expected — the value here is
+    // exercising the live-root-tree scan path over a real image.
+    let anomalies = audit_image(&img);
+    assert!(
+        anomalies.is_empty(),
+        "the clean deletion oracle must audit clean, got: {anomalies:?}"
+    );
+}
