@@ -114,3 +114,39 @@ pub fn superblock_crc_status(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod unit {
+    use super::{superblock_crc_status, verify_superblock_crc32c, CsumType, BTRFS_CSUM_SIZE};
+
+    #[test]
+    fn csum_type_decodes_every_code() {
+        assert_eq!(CsumType::from_code(0), CsumType::Crc32c);
+        assert_eq!(CsumType::from_code(1), CsumType::Xxhash64);
+        assert_eq!(CsumType::from_code(2), CsumType::Sha256);
+        assert_eq!(CsumType::from_code(3), CsumType::Blake2);
+        assert_eq!(CsumType::from_code(99), CsumType::Unknown(99));
+    }
+
+    #[test]
+    fn verify_rejects_short_and_degenerate_blocks() {
+        // Fewer than 4 bytes: cannot read the stored digest → false.
+        assert!(!verify_superblock_crc32c(&[0u8; 3], 4096));
+        // covered_len at or below the csum field: no covered range → false.
+        assert!(!verify_superblock_crc32c(&[0u8; 64], BTRFS_CSUM_SIZE));
+        // covered_len past the buffer end: covered slice out of range → false.
+        assert!(!verify_superblock_crc32c(&[0u8; 40], 4096));
+    }
+
+    #[test]
+    fn crc_status_is_none_for_non_crc32c_types() {
+        let block = [0u8; 64];
+        assert_eq!(superblock_crc_status(CsumType::Xxhash64, &block, 64), None);
+        assert_eq!(superblock_crc_status(CsumType::Sha256, &block, 64), None);
+        assert_eq!(superblock_crc_status(CsumType::Blake2, &block, 64), None);
+        assert_eq!(
+            superblock_crc_status(CsumType::Unknown(7), &block, 64),
+            None
+        );
+    }
+}

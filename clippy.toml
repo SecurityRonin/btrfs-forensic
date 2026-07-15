@@ -6,4 +6,4 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
 # Product/format names that look like code identifiers to doc_markdown.
-doc-valid-idents = ["btrfs", "BTRFS", "CRC32c", "crc32c", "xxhash64", "SHA256", "SHA-256", "BLAKE2", "sys_chunk_array", "logical", "MD5"]
+doc-valid-idents = ["btrfs", "BTRFS", "CRC32c", "crc32c", "xxhash64", "SHA256", "SHA-256", "BLAKE2", "sys_chunk_array", "logical", "MD5", "CoW"]
