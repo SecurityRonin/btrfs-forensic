@@ -1,0 +1,4 @@
+Label: 'BTRFS_ORACLE'  uuid: fe9599cb-e209-4d5c-b734-642c457fbc01
+	Total devices 1 FS bytes used 208.00KiB
+	devid    1 size 512.00MiB used 88.00MiB path /tmp/btrfs/btrfs.img
+

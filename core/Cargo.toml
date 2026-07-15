@@ -1,0 +1,29 @@
+[package]
+name = "btrfs-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust from-scratch btrfs filesystem reader — superblock, chunk-tree logical→physical mapping, B-tree navigation, over any byte source"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/btrfs-core"
+readme.workspace = true
+authors.workspace = true
+keywords = ["forensics", "btrfs", "filesystem", "dfir", "parser"]
+categories.workspace = true
+# Integration tests live under /tests and read fixtures from the repo-root
+# tests/data via env-gated paths, outside this package. They are repo-CI
+# artifacts, not consumer-facing — excluding them keeps the published tarball
+# self-contained.
+exclude = ["/fuzz", "/.github", "/docs", "/tests"]
+
+# The bare `btrfs` crate name on crates.io is a maintained third-party ioctl
+# wrapper (`btrfs` 1.2.2, "Interface for BTRFS ioctls etc"). We do NOT hijack
+# that import path; consumers use `btrfs_core` so our on-disk reader is never
+# confused with the live-FS ioctl crate. Hence no `[lib] name` override.
+
+[dependencies]
+thiserror = { workspace = true }
+# CRC32c verification of the superblock (btrfs default checksum).
+crc = { workspace = true }

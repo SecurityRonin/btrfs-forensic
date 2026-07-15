@@ -1,0 +1,22 @@
+[package]
+name = "btrfs-forensic"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Forensic anomaly auditor for btrfs — CoW stale-root / generation-inconsistency / csum-mismatch recovery as graded report::Finding, built on btrfs-core"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/btrfs-forensic"
+readme.workspace = true
+authors.workspace = true
+keywords = ["forensics", "btrfs", "dfir", "carving", "anti-forensics"]
+categories.workspace = true
+
+[dependencies]
+btrfs-core = { workspace = true }
+# btrfs structure knowledge + the shared report model (Severity/Observation).
+forensicnomicon = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+btrfs-progs v6.6.3
+See https://btrfs.readthedocs.io for more information.
+
+NOTE: several default settings have changed in version 5.15, please make sure
+      this does not affect your deployments:
+      - DUP for metadata (-m dup)
+      - enabled no-holes (-O no-holes)
+      - enabled free-space-tree (-R free-space-tree)
+
+Label:              BTRFS_ORACLE
+UUID:               fe9599cb-e209-4d5c-b734-642c457fbc01
+Node size:          16384
+Sector size:        4096
+Filesystem size:    512.00MiB
+Block group profiles:
+  Data:             single            8.00MiB
+  Metadata:         DUP              32.00MiB
+  System:           DUP               8.00MiB
+SSD detected:       no
+Zoned device:       no
+Incompat features:  extref, skinny-metadata, no-holes, free-space-tree
+Runtime features:   free-space-tree
+Checksum:           crc32c
+Number of devices:  1
+Devices:
+   ID        SIZE  PATH     
+    1   512.00MiB  btrfs.img
+

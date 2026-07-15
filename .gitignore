@@ -1,0 +1,10 @@
+/target
+
+# Pure-library workspace — the lock is not committed (fleet policy commits
+# Cargo.lock only in binary/app repos, so downstream consumers resolve freely).
+/Cargo.lock
+
+# The large minted btrfs oracle image is gitignored (512 MiB) — only the small
+# extracted superblock fixture (btrfs_superblock.bin) and the oracle TEXT
+# outputs / provenance are committed. Re-mint from the recorded mkfs commands.
+/tests/data/*.img
