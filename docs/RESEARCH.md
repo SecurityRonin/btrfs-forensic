@@ -111,7 +111,8 @@ compression: `0=none,1=zlib,2=LZO,3=zstd`; `ram_bytes`=decompressed size.
 - **`btrfs inspect-internal dump-super [-f]`** — SB + system chunk array + backup roots (structural oracle).
 - **`btrfs inspect-internal dump-tree [-t <tree>]`** — every tree/item/key — **the canonical structural ground-truth oracle**.
 - **`btrfs-debugfs`** (Python) — per-file extent mapping.
-- **Kernel driver (mount -o ro,loop + sha256)** — content oracle (Tier-1).
+- **Kernel driver (mount -o ro,loop + sha256)** — content oracle (independent
+  second implementation; on a *self-minted* image this is still Tier-2 — see §3).
 - **TSK: btrfs is NOT stable.** Added in TSK **4.13.0** (Mar 2025) then **reverted as
   experimental in 4.14.0** (Apr 2025). Official stable list excludes btrfs; pytsk3
   inherits this. Academic add-ons: Juchli's TSK-btrfs (`ajuch/sleuthkit-btrfs-testsuite`),
@@ -124,7 +125,7 @@ compression: `0=none,1=zlib,2=LZO,3=zstd`; `ram_bytes`=decompressed size.
 (GPL) = algorithm references (read, don't vendor). Validate vs
 `btrfs inspect-internal dump-tree` (structure) + mount-ro/sha256 (content).
 
-## 3. Real sample data + oracle (Tier-1 plan)
+## 3. Real sample data + oracle (Tier-2 self-mint backstop; Tier-1 real corpus wired via Fedora)
 
 ```bash
 # Parallels Ubuntu VM: sudo apt install btrfs-progs
@@ -145,7 +146,7 @@ echo "in subvolume" | sudo tee subv1/svfile.txt >/dev/null
 sudo btrfs subvolume snapshot subv1 snap1
 sudo btrfs subvolume snapshot -r subv1 snap1_ro
 sync
-sudo find . -type f -exec sha256sum {} \; | sudo tee /tmp/btrfs-oracle.sha256   # content Tier-1
+sudo find . -type f -exec sha256sum {} \; | sudo tee /tmp/btrfs-oracle.sha256   # content check (Tier-2: self-minted content)
 sudo umount /mnt/btrfs-oracle
 # structural oracles (Tier-2)
 btrfs inspect-internal dump-super -f btrfs-oracle.img  > /tmp/oracle.dump-super.txt
@@ -154,12 +155,27 @@ btrfs inspect-internal dump-tree -t chunk btrfs-oracle.img > /tmp/oracle.chunk-t
 btrfs inspect-internal dump-tree -t root  btrfs-oracle.img > /tmp/oracle.root-tree.txt
 ```
 
-**Tiering:** **content Tier-1** (mount-ro + sha256, kernel driver = independent
-oracle — strongest); **structure Tier-2** (dump-tree/dump-super, btrfs-progs ≠ our
-reader, documented construction). **Corpora:** no dedicated btrfs image in
-CFReDS/Digital Corpora; openSUSE/Fedora default installs use btrfs (mint a VM disk or
-loop a cloud qcow2 btrfs partition) as REAL-ext secondary validation. Document
-verbatim commands per fleet provenance standard.
+**Tiering (corrected — self-minted ≠ Tier-1).** A non-ours *oracle*
+(`btrfs inspect-internal dump-super/dump-tree`, the kernel mount, sha256) does not
+lift a self-authored *artifact* to Tier-1. Our `btrfs.img` is **REAL-self = Tier-2**:
+real `mkfs.btrfs` output, confirmed byte-for-byte by independent tools, but **we chose
+the scenario** — so both structure (dump-tree/dump-super) and content (mount-ro +
+sha256) are validated at **Tier-2**. Tier-2 is the correct, useful tier for these
+committed fixtures: fast, deterministic P0/P1 regression backstops under an independent
+decoder oracle. But it inherits our blind spots — a single-device `mkfs.btrfs -d single`
+image only ever exercises the geometry we asked for.
+
+Genuine **Tier-1** requires a *third-party-authored or real-world* artifact whose
+answer key we did not write. **btrfs has no ground-truth forensic corpus** — no
+`libfsbtrfs` in libyal, no dfvfs btrfs test image, no NIST CFReDS btrfs answer key,
+and TSK's btrfs support was reverted as experimental (§2). The best available Tier-1
+is therefore a **real Fedora Cloud btrfs image** (the Fedora Project authored the
+filesystem, not us), validated against the independent `btrfs inspect-internal`
+decoder. Honest framing: this is **"real distro image + independent decoder oracle,"
+not a ground-truth answer-key corpus** — see [`validation.md`](validation.md) and
+`tests/data/README.md` for the wired Fedora oracle (`BTRFS_FEDORA_ORACLE`, gitignored).
+Document every minted/downloaded image's commands per the fleet provenance standard
+(`tests/data/README.md` + `issen/docs/corpus-catalog.md`).
 
 ## 4. Scope/difficulty + phased build order
 
@@ -189,7 +205,8 @@ design; you parse two trees just to bootstrap addressing before any content is r
 `dump-tree -t chunk`) → P2 Tree-block reader (header + key_ptr + item; key search
 honoring `(objectid,type,offset)`; csum per block; oracle `dump-tree`) → P3 Full chunk
 tree → P4 Root tree + FS tree (ROOT_ITEMs → FS tree 5 → inodes) → P5 File read
-(EXTENT_DATA inline + regular uncompressed → **Tier-1 sha256 gate**) → P6 Compression
+(EXTENT_DATA inline + regular uncompressed → **content sha256 gate** — Tier-2 on the
+self-mint, Tier-1 once run against the real Fedora image) → P6 Compression
 (zlib→zstd→LZO) + sparse holes + timestamps → P7 Subvolumes/snapshots (multi-device/
 RAID deferred).
 
