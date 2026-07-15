@@ -12,7 +12,12 @@
 //! btrfs metadata is little-endian on disk; the superblock lives at physical
 //! offset 65536 and the `btrfs_root_backup[4]` array at superblock offset 0xb2b.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::doc_markdown
+)]
 
 use std::path::PathBuf;
 
@@ -268,9 +273,11 @@ fn audit_findings_convert_every_anomaly_kind() {
     b[it0 + 8] = 48;
     b[it0 + 9..it0 + 17].copy_from_slice(&257u64.to_le_bytes());
     reseal_node(&mut b[fs_phys..fs_phys + 16_384]);
-    // Impossible geometry: chunk_root logical absurd (offset 0x58).
-    let chunk_root_off = 65_536 + 0x58;
-    b[chunk_root_off..chunk_root_off + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    // Impossible geometry: the `root` (root-tree) logical is absurd (offset 0x50)
+    // so it cannot resolve — while `chunk_root` stays valid, keeping the chunk map
+    // intact so the crafted FS_TREE orphan is still reachable for the scan.
+    let root_off = 65_536 + 0x50;
+    b[root_off..root_off + 8].copy_from_slice(&u64::MAX.to_le_bytes());
     let sect = 4096usize;
     reseal_sb(&mut b[65_536..65_536 + sect], sect);
 

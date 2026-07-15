@@ -22,7 +22,12 @@
 //! THE gate: the carved deleted-file content's sha256 equals the pre-delete
 //! `sha256sum` recorded at mint (`DELETED_SECRET_SHA256`).
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::doc_markdown,
+    clippy::format_collect
+)]
 
 use std::path::PathBuf;
 
