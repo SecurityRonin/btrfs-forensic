@@ -22,8 +22,6 @@
 //!   and windows the requested range.
 //! - **`FileId::Opaque` drops the btrfs generation** (objectid only).
 
-use std::sync::Mutex;
-
 use forensic_vfs::{
     Allocation, DirEntry as VfsDirEntry, DirStream, ExtentStream, FileId, FileSystem, FsKind,
     FsMeta, ImageSource, MacbTimes, NodeKind, NodeStream, ResidencyKind, SectorSizes, StreamId,
@@ -31,8 +29,8 @@ use forensic_vfs::{
 };
 
 use crate::{
-    fs_tree_root, list_dir, read_file, read_inode, read_node, ChunkMap, DirEntry, DirItemType,
-    Inode, Node, Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
+    fs_tree_root, list_dir, read_file, read_inode, read_node, ChunkMap, DirItemType, Inode, Node,
+    Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
 };
 
 /// A mounted btrfs image presented as a read-only [`FileSystem`].
@@ -43,10 +41,6 @@ pub struct BtrfsFs {
     /// The FS-tree root leaf (btrfs-core traverses a single leaf; see module docs).
     leaf: Node,
     root_dirid: u64,
-    /// Whole-file read cache is unnecessary; `read_file` is called per request.
-    /// A `Mutex` is not needed for reads (all `&self`, no interior mutation), but
-    /// kept out — this field documents that reads are lock-free over the buffer.
-    _lockfree: (),
 }
 
 /// Extract the btrfs objectid a [`FileId`] addresses; any other identity domain
@@ -147,7 +141,6 @@ impl BtrfsFs {
             map,
             leaf,
             root_dirid: root.root_dirid,
-            _lockfree: (),
         })
     }
 }
@@ -168,8 +161,7 @@ impl FileSystem for BtrfsFs {
     }
 
     fn root(&self) -> FileId {
-        // RED: stub.
-        FileId::Opaque(0)
+        FileId::Opaque(self.root_dirid)
     }
 
     fn sector_sizes(&self) -> SectorSizes {
@@ -184,42 +176,101 @@ impl FileSystem for BtrfsFs {
         TimeZonePolicy::Utc
     }
 
-    fn read_dir(&self, _ino: FileId) -> VfsResult<DirStream> {
-        // RED: stub.
-        Ok(DirStream::empty())
+    fn read_dir(&self, ino: FileId) -> VfsResult<DirStream> {
+        let dir_oid = oid_of(ino)?;
+        let out: Vec<VfsResult<VfsDirEntry>> = list_dir(&self.leaf, dir_oid)
+            .into_iter()
+            .map(|e| {
+                Ok(VfsDirEntry {
+                    name: e.name.into_bytes(),
+                    id: FileId::Opaque(e.child),
+                    kind: dirent_kind(&e.item_type),
+                })
+            })
+            .collect();
+        Ok(DirStream::new(out.into_iter()))
     }
 
     fn extents(&self, _ino: FileId, _stream: StreamId) -> VfsResult<ExtentStream> {
         Ok(ExtentStream::empty())
     }
 
-    fn lookup(&self, _parent: FileId, _name: &[u8]) -> VfsResult<Option<FileId>> {
-        // RED: stub.
-        Ok(None)
+    fn lookup(&self, parent: FileId, name: &[u8]) -> VfsResult<Option<FileId>> {
+        let dir_oid = oid_of(parent)?;
+        let found = list_dir(&self.leaf, dir_oid)
+            .into_iter()
+            .find(|e| e.name.as_bytes() == name)
+            .map(|e| FileId::Opaque(e.child));
+        Ok(found)
     }
 
     fn meta(&self, ino: FileId) -> VfsResult<FsMeta> {
-        // RED: stub.
-        let _ = oid_of(ino)?;
-        Err(VfsError::Unsupported {
-            layer: "btrfs meta",
-            scheme: "RED".to_string(),
+        let oid = oid_of(ino)?;
+        let inode = read_inode(&self.leaf, oid).ok_or(VfsError::OutOfRange {
+            what: "btrfs inode (not in FS-tree root leaf)",
+            offset: oid,
+            len: 1,
+            bound: 0,
+        })?;
+        // otime (btrfs "creation" time) of exactly zero is treated as absent —
+        // forensically distinct from an epoch-zero birth.
+        let born = if inode.otime.sec != 0 {
+            Some(stamp(&inode.otime))
+        } else {
+            None
+        };
+        Ok(FsMeta {
+            ino: inode.objectid,
+            kind: inode_kind(&inode),
+            allocated: Allocation::Allocated,
+            size: inode.size,
+            nlink: inode.nlink,
+            uid: Some(inode.uid),
+            gid: Some(inode.gid),
+            mode: Some(inode.mode),
+            times: MacbTimes {
+                modified: Some(stamp(&inode.mtime)),
+                accessed: Some(stamp(&inode.atime)),
+                changed: Some(stamp(&inode.ctime)),
+                born,
+            },
+            streams: Vec::new(),
+            residency: ResidencyKind::NonResident,
+            link_target: None,
         })
     }
 
-    fn read_at(
-        &self,
-        _ino: FileId,
-        _stream: StreamId,
-        _off: u64,
-        _buf: &mut [u8],
-    ) -> VfsResult<usize> {
-        // RED: stub.
-        Ok(0)
+    fn read_at(&self, ino: FileId, stream: StreamId, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
+        let oid = oid_of(ino)?;
+        require_default_stream(stream)?;
+        // btrfs-core reads a whole file (no ranged API); window the requested
+        // range out of the returned bytes.
+        let data = read_file(&self.image, &self.sb, &self.map, oid).map_err(map_btrfs_err)?;
+        let start = off.min(data.len() as u64) as usize;
+        let Some(avail) = data.get(start..) else {
+            return Ok(0); // cov:unreachable: start <= data.len() by the min above
+        };
+        let n = avail.len().min(buf.len());
+        let Some(dst) = buf.get_mut(..n) else {
+            return Ok(0); // cov:unreachable: n <= buf.len() by the min above
+        };
+        dst.copy_from_slice(&avail[..n]);
+        Ok(n)
     }
 
-    fn read_link(&self, _ino: FileId, _cap: usize) -> VfsResult<Vec<u8>> {
-        Ok(Vec::new())
+    fn read_link(&self, ino: FileId, cap: usize) -> VfsResult<Vec<u8>> {
+        let oid = oid_of(ino)?;
+        let Some(inode) = read_inode(&self.leaf, oid) else {
+            return Ok(Vec::new());
+        };
+        if inode_kind(&inode) != NodeKind::Symlink {
+            // A non-symlink reads as an empty target (matches the ext4 adapter).
+            return Ok(Vec::new());
+        }
+        // btrfs stores a symlink target as the node's inline file content.
+        let mut target = read_file(&self.image, &self.sb, &self.map, oid).map_err(map_btrfs_err)?;
+        target.truncate(cap);
+        Ok(target)
     }
 
     fn deleted(&self) -> VfsResult<NodeStream> {
