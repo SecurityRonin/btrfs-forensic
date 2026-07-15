@@ -23,6 +23,13 @@ exclude = ["/fuzz", "/.github", "/docs", "/tests"]
 # that import path; consumers use `btrfs_core` so our on-disk reader is never
 # confused with the live-FS ioctl crate. Hence no `[lib] name` override.
 
+[features]
+default = []
+# forensic-vfs FileSystem contract (optional): mount a btrfs image as a
+# node-addressed read-only filesystem. Behind the `vfs` feature so the bare
+# parser does not inherit the VFS dependency graph (ADR 0004).
+vfs = ["dep:forensic-vfs"]
+
 [dependencies]
 thiserror = { workspace = true }
 # CRC32c verification of the superblock (btrfs default checksum).
@@ -32,3 +39,4 @@ crc = { workspace = true }
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
 lzo = { workspace = true }
+forensic-vfs = { version = "0.1", optional = true }

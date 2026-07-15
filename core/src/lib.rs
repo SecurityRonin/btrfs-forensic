@@ -45,6 +45,8 @@ mod extent;
 mod fstree;
 mod node;
 mod superblock;
+#[cfg(feature = "vfs")]
+pub mod vfs;
 
 pub use chunk::{
     DiskKey, Stripe, SysChunk, BLOCK_GROUP_DATA, BLOCK_GROUP_DUP, BLOCK_GROUP_METADATA,
