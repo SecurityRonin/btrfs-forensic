@@ -42,6 +42,12 @@ dd if=btrfs.img bs=1 skip=65536 count=4096 of=btrfs_superblock.bin status=none
 btrfs inspect-internal dump-super -f btrfs.img          > btrfs.dump-super.txt
 btrfs filesystem show                btrfs.img          > btrfs.fs-show.txt
 btrfs inspect-internal dump-tree -b 22036480 btrfs.img  > btrfs.chunk-tree.txt   # P1 chunk tree
+btrfs inspect-internal dump-tree -b 22036480 btrfs.img  > btrfs.chunk-node.txt   # P1 node (same tree)
+
+# Extract the P1 always-on fixture: the raw 16384-byte chunk-tree LEAF node.
+# The chunk_root logical addr 22036480 maps (via the sys_chunk_array bootstrap)
+# to the identical physical offset 22036480 on this oracle, so skip= that value.
+dd if=btrfs.img bs=1 skip=22036480 count=16384 of=btrfs_chunk_root.bin status=none
 ```
 
 ## Ground truth (from `btrfs inspect-internal dump-super -f`)
@@ -90,6 +96,49 @@ logical `22036480` → physical `22036480` (this chunk is placed at an identity
 offset on the oracle; the test also checks an out-of-span address maps to
 `None`).
 
+## P1 ground truth (from `btrfs inspect-internal dump-tree -b 22036480`)
+
+The chunk tree is a single **leaf** at bytenr 22036480 (level 0), 4 items,
+generation 6, owner `CHUNK_TREE` (3). Values the P1 always-on test asserts (all
+verified byte-for-byte against the raw fixture AND dump-tree — the on-disk
+`btrfs_header`/`btrfs_item`/`btrfs_key_ptr`/`btrfs_chunk`/`btrfs_stripe` offsets
+in the task brief were confirmed correct, no shift):
+
+| header field | offset | value |
+|---|---|---|
+| `csum` (crc32c, LE) | `0x00` | `0x88f84902` `[match]` (bytes `02 49 f8 88`) |
+| `fsid` | `0x20` | `fe9599cb-…` (= superblock fsid) |
+| `bytenr` (own logical) | `0x30` | `22036480` |
+| `flags` | `0x38` | `0x100000000000001` (WRITTEN + backref-rev-1 bit) |
+| `chunk_tree_uuid` | `0x40` | `05ec8046-…` |
+| `generation` | `0x50` | `6` |
+| `owner` (tree id) | `0x58` | `3` (CHUNK_TREE) |
+| `nritems` | `0x60` | `4` |
+| `level` | `0x64` | `0` (leaf) → **header size = 0x65 = 101 bytes** |
+
+Leaf items start at `header_end` (101); each `btrfs_item` = `disk_key[17] +
+data_offset(u32) + data_size(u32)` = 25 bytes; item **data** lives at
+`header_end + data_offset` (dump-tree's `itemoff`):
+
+| item | key (oid, type, offset) | data_offset | data_size | decoded |
+|---|---|---|---|---|
+| 0 | (1 DEV_ITEM=216 1) | 16185 | 98 | DEV_ITEM (skipped by chunk walk) |
+| 1 | (256 CHUNK_ITEM=228 13631488) | 16105 | 80 | DATA\|single, 1 stripe @13631488 |
+| 2 | (256 228 22020096) | 15993 | 112 | SYSTEM\|DUP (0x22), stripes @22020096,@30408704 |
+| 3 | (256 228 30408704) | 15881 | 112 | METADATA\|DUP (0x24), len 33554432, stripes @38797312,@72351744 |
+
+`btrfs_chunk` (data of a CHUNK_ITEM) = `length,owner,stripe_len,type` (4×u64) +
+`io_align,io_width,sector_size` (3×u32) + `num_stripes,sub_stripes` (2×u16) = 48
+bytes, then `num_stripes × btrfs_stripe {devid(u64), offset(u64=physical),
+dev_uuid[16]}` = 32 bytes each. **Node crc32c covers `[0x20 .. nodesize=16384]`**
+(the whole block, unlike the superblock which covers `sectorsize`); computed
+`0x88f84902` reproduces the stored digest → `crc_valid == Some(true)`.
+
+Chunk-map logical→physical the P1 test asserts (single-device DUP/single, first
+stripe): `chunk_root` logical `22036480` → physical `22036480` (identity), `root`
+logical `30720000` → physical `39108608` (METADATA chunk: `38797312 + (30720000 −
+30408704)`), DATA chunk start `13631488` → `13631488`.
+
 ## Field-offset note (Doer-Checker)
 
 The scalar offsets in `btrfs_super_block` were **verified byte-for-byte against
@@ -109,9 +158,11 @@ caught it.)
 | file | oracle | anchors |
 |---|---|---|
 | `btrfs_superblock.bin` (md5 `812c99bb8ddd898a011abcd3ac5c3bbe`, 4096 B) | `dd skip=65536 count=4096` | **P0 always-on superblock test** |
+| `btrfs_chunk_root.bin` (md5 `316c875aa24188c9b252fa09f78f8147`, 16384 B) | `dd skip=22036480 count=16384` | **P1 always-on node/chunk test** (raw chunk-tree leaf) |
 | `btrfs.dump-super.txt` | `dump-super -f` | P0 superblock field ground truth |
 | `btrfs.fs-show.txt` | `btrfs filesystem show` | human geometry cross-check |
 | `btrfs.chunk-tree.txt` | `dump-tree -b 22036480` | **P1** full chunk-tree walk oracle (DATA/SYSTEM/METADATA chunks) |
+| `btrfs.chunk-node.txt` | `dump-tree -b 22036480` | **P1** node ground truth for `btrfs_chunk_root.bin` |
 | `btrfs.content.sha256` | `sha256sum` on mount | P5 file-content Tier-1 (later phase) |
 | `btrfs.mkfs.txt` | `mkfs.btrfs` stdout | mint provenance |
 
