@@ -22,9 +22,9 @@
 use std::path::PathBuf;
 
 use btrfs_core::{
-    fs_tree_root, list_dir, read_by_path, read_inode, DirItemType, Node, Superblock,
-    BTRFS_SUPER_INFO_OFFSET, BTRFS_SUPER_INFO_SIZE, FS_TREE_OBJECTID, FS_TREE_ROOT_DIR_OBJECTID,
-    INODE_ITEM_KEY, INODE_REF_KEY,
+    fs_tree_root, list_dir, read_by_path, read_inode, ChunkMap, DirItemType, Node, Superblock,
+    BTRFS_SUPER_INFO_OFFSET, BTRFS_SUPER_INFO_SIZE, DIR_ITEM_KEY, FS_TREE_OBJECTID,
+    FS_TREE_ROOT_DIR_OBJECTID, INODE_ITEM_KEY, INODE_REF_KEY, ROOT_ITEM_KEY,
 };
 
 /// The FS_TREE leaf's own logical address. dump-tree: `leaf 30654464 items 25
@@ -127,7 +127,7 @@ fn list_dir_root_matches_ls_i() {
         .iter()
         .map(|e| (e.name.clone(), e.child, e.item_type))
         .collect();
-    by_name.sort();
+    by_name.sort_by(|a, b| a.0.cmp(&b.0));
 
     assert_eq!(
         by_name,
@@ -332,4 +332,175 @@ fn full_image_locates_fs_tree_root_from_root_tree() {
     let (ino, inode) = read_by_path(&fs_leaf, "/dir/sub/leaf.txt").expect("resolve nested");
     assert_eq!(ino, 261);
     assert_eq!(inode.size, 20);
+}
+
+// ---- Crafted-leaf tests for branches the oracle does not exercise ----
+//
+// The oracle has only files + directories, an FS_TREE that always exists, and no
+// truncated items, so the symlink / other-type classification, the too-short
+// dir-item guard, and the "no FS_TREE ROOT_ITEM" error path have no real fixture.
+// These synthesize a minimal in-memory leaf (a lower tier than the real oracle,
+// but the byte layout is the verified P2 layout) to drive those branches. The
+// real oracle above remains the correctness backstop for the happy path.
+
+const NODESIZE: usize = 16384;
+const HDR_END: usize = 101;
+const ITEM_STRIDE: usize = 25;
+
+/// Build an FS_TREE-style leaf: a `btrfs_header` (owner 5, level 0) + item
+/// headers (key + data_offset/size) with data laid out backward from the node
+/// end, and a fixed-up crc32c so `Node::parse` reports `crc_valid == Some(true)`.
+fn build_fs_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&30_654_464u64.to_le_bytes()); // bytenr
+    node[0x58..0x60].copy_from_slice(&owner.to_le_bytes());
+    node[0x60..0x64].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    node[0x64] = 0; // leaf
+    let mut data_tail = NODESIZE;
+    for (i, (oid, ty, koff, data)) in items.iter().enumerate() {
+        let io = HDR_END + i * ITEM_STRIDE;
+        node[io..io + 8].copy_from_slice(&oid.to_le_bytes());
+        node[io + 8] = *ty;
+        node[io + 9..io + 17].copy_from_slice(&koff.to_le_bytes());
+        data_tail -= data.len();
+        let doff = (data_tail - HDR_END) as u32;
+        node[io + 17..io + 21].copy_from_slice(&doff.to_le_bytes());
+        node[io + 21..io + 25].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        node[data_tail..data_tail + data.len()].copy_from_slice(data);
+    }
+    fix_node_crc(&mut node);
+    node
+}
+
+/// Encode a `btrfs_dir_item` body: location key[17] + transid(8) + data_len(2) +
+/// name_len(2) + type(1) + name.
+fn dir_item(child: u64, dir_type: u8, name: &[u8]) -> Vec<u8> {
+    let mut d = vec![0u8; 30 + name.len()];
+    d[0..8].copy_from_slice(&child.to_le_bytes()); // location.objectid
+    d[8] = 1; // location.type = INODE_ITEM
+              // transid @17, data_len @25 = 0
+    d[27..29].copy_from_slice(&(name.len() as u16).to_le_bytes()); // name_len
+    d[29] = dir_type;
+    d[30..30 + name.len()].copy_from_slice(name);
+    d
+}
+
+fn fix_node_crc(node: &mut [u8]) {
+    let c = crc32c_iscsi(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+}
+
+fn crc32c_iscsi(buf: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in buf {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+#[test]
+fn dir_item_type_classifies_symlink_and_other() {
+    // A directory (256) with a symlink child (type 7) and an unknown type (99):
+    // the classifier must surface Symlink and Other(99) (unknown value shown,
+    // never dropped).
+    let leaf = build_fs_leaf(
+        FS_TREE_OBJECTID,
+        &[
+            (256, DIR_ITEM_KEY, 111, dir_item(300, 7, b"link")),
+            (256, DIR_ITEM_KEY, 222, dir_item(301, 99, b"weird")),
+        ],
+    );
+    let node = Node::parse(&leaf).unwrap();
+    let entries = list_dir(&node, 256);
+    let link = entries.iter().find(|e| e.name == "link").unwrap();
+    assert_eq!(link.item_type, DirItemType::Symlink, "type 7 = Symlink");
+    assert_eq!(link.child, 300);
+    let weird = entries.iter().find(|e| e.name == "weird").unwrap();
+    assert_eq!(
+        weird.item_type,
+        DirItemType::Other(99),
+        "unknown dir type surfaces its raw byte"
+    );
+}
+
+#[test]
+fn list_dir_skips_a_truncated_dir_item() {
+    // A DIR_ITEM whose data is shorter than the 30-byte fixed prefix cannot be
+    // decoded: parse_dir_item returns None and list_dir skips it (no panic), and
+    // a well-formed sibling still lists.
+    let leaf = build_fs_leaf(
+        FS_TREE_OBJECTID,
+        &[
+            (256, DIR_ITEM_KEY, 111, vec![0u8; 10]), // too short (< 30)
+            (256, DIR_ITEM_KEY, 222, dir_item(302, 1, b"ok.txt")),
+        ],
+    );
+    let node = Node::parse(&leaf).unwrap();
+    let entries = list_dir(&node, 256);
+    assert_eq!(entries.len(), 1, "the truncated dir item is skipped");
+    assert_eq!(entries[0].name, "ok.txt");
+    assert_eq!(entries[0].child, 302);
+}
+
+#[test]
+fn fs_tree_root_errors_loud_when_root_tree_has_no_fs_tree_item() {
+    // A crafted image whose root tree (a leaf) carries a ROOT_ITEM for some other
+    // tree but NOT the FS_TREE (objectid 5): fs_tree_root must return a loud,
+    // named Truncated error, never silently succeed. The image is built so the
+    // sys_chunk_array identity-maps the root logical to a physical offset holding
+    // this crafted root-tree leaf.
+    let root_logical = 4096u64;
+    let sys_len = 65536u64;
+
+    // Root-tree leaf with one ROOT_ITEM keyed by objectid 2 (EXTENT_TREE), not 5.
+    let root_item = vec![0u8; 239]; // >= level offset (238); all-zero is fine here
+    let leaf = build_fs_leaf(1 /*ROOT_TREE*/, &[(2, ROOT_ITEM_KEY, 0, root_item)]);
+
+    // Superblock: magic, root=root_logical, chunk_root outside (unused here since
+    // read_node falls back to sys_chunks for the root logical), nodesize, and a
+    // sys_chunk_array identity-mapping [root_logical, +sys_len).
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65536u64.to_le_bytes()); // bytenr
+    sb[0x50..0x58].copy_from_slice(&root_logical.to_le_bytes()); // root
+    sb[0x58..0x60].copy_from_slice(&root_logical.to_le_bytes()); // chunk_root (unused)
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes()); // FIRST_CHUNK_TREE
+    sb[arr + 8] = 228; // CHUNK_ITEM
+    sb[arr + 9..arr + 17].copy_from_slice(&root_logical.to_le_bytes());
+    let ci = {
+        let mut d = vec![0u8; 48 + 32];
+        d[0..8].copy_from_slice(&sys_len.to_le_bytes()); // length
+        d[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // SYSTEM
+        d[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+        d[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+        d[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+        d[56..64].copy_from_slice(&root_logical.to_le_bytes()); // stripe offset (identity)
+        d
+    };
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes()); // sys_array_size
+
+    // Assemble the image: superblock @0x10000, root-tree leaf @physical 4096.
+    let sb_off = 65536usize;
+    let mut img = vec![0u8; sb_off + BTRFS_SUPER_INFO_SIZE];
+    img[sb_off..sb_off + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb);
+    img[root_logical as usize..root_logical as usize + NODESIZE].copy_from_slice(&leaf);
+
+    let sb = Superblock::parse(&img[sb_off..sb_off + BTRFS_SUPER_INFO_SIZE]).unwrap();
+    let map = ChunkMap::new(); // empty: read_node falls back to sys_chunks bootstrap
+    let err = fs_tree_root(&img, &sb, &map).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("FS_TREE ROOT_ITEM"),
+        "missing FS_TREE ROOT_ITEM is a loud, named failure, got {err:?}"
+    );
 }
