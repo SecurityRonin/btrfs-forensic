@@ -1,8 +1,23 @@
 # btrfs Forensic Test Data — Provenance
 
-**REAL-self Tier-1**: minted on a controlled Linux VM with `mkfs.btrfs`
-(btrfs-progs) and cross-checked against the independent `btrfs inspect-internal`
-oracle (a different implementation from this reader). See the fleet catalog at
+Two evidentiary tiers (see [`docs/validation.md`](../../docs/validation.md)):
+
+- **Tier-1 (REAL-ext):** a genuine third-party btrfs filesystem — the **Fedora
+  Cloud Base 41** root partition — validated against the independent
+  `btrfs inspect-internal` decoder. Neither the image nor its answer key was
+  authored by us. Gitignored + downloaded on demand (`BTRFS_FEDORA_ORACLE`).
+  btrfs has **no ground-truth forensic corpus** (no libfsbtrfs, no dfvfs btrfs,
+  no NIST answer key), so this is "real distro image + independent decoder
+  oracle," not an answer-key corpus — but it is real, third-party geometry the
+  self-mint never produced (see the Fedora entry below).
+- **Tier-2 (REAL-self):** minted on a controlled Linux VM with `mkfs.btrfs`
+  (btrfs-progs) and cross-checked against the independent `btrfs inspect-internal`
+  oracle (a different implementation from this reader). Real `mkfs.btrfs` output,
+  independently checked — **but we chose the scenario**, so it is Tier-2, not
+  Tier-1: a fast, deterministic P0/P1 regression backstop, not the independent
+  answer key.
+
+See the fleet catalog at
 [`issen/docs/corpus-catalog.md`](../../../issen/docs/corpus-catalog.md) for the
 machine index; this README is the co-located human detail.
 
@@ -32,7 +47,7 @@ sudo bash -c "yes ABCDEFGH | head -c 65536 > /mnt/btrfs-oracle/mid.bin"
 sudo mkdir -p /mnt/btrfs-oracle/dir/sub
 echo "nested leaf content" | sudo tee /mnt/btrfs-oracle/dir/sub/leaf.txt >/dev/null
 sync
-sudo find /mnt/btrfs-oracle -type f -exec sha256sum {} \; > btrfs.content.sha256   # content Tier-1
+sudo find /mnt/btrfs-oracle -type f -exec sha256sum {} \; > btrfs.content.sha256   # content check (Tier-2: self-minted)
 sudo umount /mnt/btrfs-oracle
 
 # Extract the committed always-on fixture: the 4096-byte block at 0x10000.
@@ -60,7 +75,7 @@ btrfs inspect-internal dump-tree btrfs.img > btrfs.full-tree.txt
 # physical = 38797312 + (30654464 - 30408704) = 39043072.
 dd if=btrfs.img bs=1 skip=39043072 count=16384 of=btrfs_fs_tree_leaf.bin status=none
 
-# Independent Tier-1 content/metadata oracle (kernel driver, a different impl):
+# Independent decoder oracle (kernel driver, a different impl) — still Tier-2 on a self-minted image:
 # mount read-only and capture ls -i (name->inode) + stat (size/mode/mtime).
 sudo mount -o loop,ro btrfs.img /mnt/btrfs-oracle
 ( cd /mnt/btrfs-oracle && ls -i -R . )
@@ -225,6 +240,80 @@ root_level@0xc6, chunk_root_level@0xc7, log_root_level@0xc8, label@0x12b,
 sys_chunk_array@0x32b`. (These correct the +0x18-shifted draft offsets in the
 task brief, which omitted `log_root_transid` — verifying against the oracle
 caught it.)
+
+## Tier-1 real-world corpus — Fedora Cloud Base 41 (REAL-ext, gitignored)
+
+The genuine Tier-1 artifact: a **real Fedora Cloud Base 41** disk image whose
+btrfs root filesystem was authored by the Fedora Project, not us. Consumed by
+`core/tests/tier1_fedora.rs` (env-gated on `BTRFS_FEDORA_ORACLE`; skips when
+absent). Not committed — large and freely re-downloadable.
+
+<!-- TODO: mirror this entry into issen/docs/corpus-catalog.md (the single fleet
+     machine index) — classify REAL-ext / Tier-1, gitignored. Do not duplicate;
+     that catalog cross-references this README. -->
+
+#### Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 → fedora-btrfs.raw
+
+- **Source:** Fedora Project, Fedora Linux 41 Cloud Base (Generic) image.
+- **Original download URL** (moved to the archive host once F41 was superseded):
+  <https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2>
+  (the `download.fedoraproject.org` redirector now 404s for F41 — use the archive
+  host directly).
+- **qcow2 identity:** 491 716 608 bytes, published SHA256
+  `6205ae0c524b4d1816dbd3573ce29b5c44ed26c9fbc874fbe48c41c89dd0bac2`
+  (from `Fedora-Cloud-41-1.4-x86_64-CHECKSUM`; verified after download).
+- **License / redistribution:** Fedora Cloud images are freely redistributable
+  (Fedora Project). We do **not** commit them — downloaded on demand.
+- **Extracted btrfs partition** (`fedora-btrfs.raw`, gitignored):
+  md5 `2e91a6d3b627ecf759779a1d2f54066d`, 4 212 112 896 bytes (GPT partition 4,
+  `p.lxroot`, at byte offset 1 156 579 328 of the 5 GiB raw disk).
+- **Independent oracle ground truth** (`btrfs inspect-internal`, btrfs-progs
+  v6.6.3), asserted by the test:
+
+  | field | value |
+  |---|---|
+  | `magic` | `_BHRfS_M` `[match]` |
+  | `csum_type` | `0 (crc32c)` |
+  | `fsid` | `815e66c2-6a8a-4984-a890-1a3c710bf933` |
+  | `label` | `fedora` |
+  | `generation` | `13` |
+  | `root` (logical) | `71991296` → physical `80379904` (METADATA\|DUP chunk) |
+  | `chunk_root` (logical) | `22069248` → physical `22069248` (SYSTEM\|DUP, identity) |
+  | `log_root` | `0` |
+  | `total_bytes` | `4212109312` |
+  | `sectorsize` / `nodesize` / `stripesize` | `4096` / `16384` / `4096` |
+  | `num_devices` | `1` |
+  | `incompat_flags` | `0x371` (MIXED_BACKREF \| **COMPRESS_ZSTD** \| BIG_METADATA \| EXTENDED_IREF \| SKINNY_METADATA \| NO_HOLES) |
+
+  The chunk tree is a single leaf at `22069248` (7 items): SYSTEM\|DUP,
+  METADATA\|DUP `[30408704, +268435456)` (first stripe physical `38797312`), and
+  several DATA\|single chunks. `COMPRESS_ZSTD` and the 256 MiB METADATA chunk are
+  real-world features the self-mint (`0x361`, 33 MiB METADATA) never produced.
+
+### Verbatim download + extraction commands (reproduce the Tier-1 corpus)
+
+```bash
+# 1. Download the Fedora Cloud qcow2 (archive host; verify SHA256).
+mkdir -p /tmp/btrfs_fedora && cd /tmp/btrfs_fedora
+curl -sSL -O \
+  https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2
+shasum -a 256 Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2   # 6205ae0c...0bac2
+
+# 2. Convert qcow2 -> raw (qemu-img; host or VM).
+qemu-img convert -O raw Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 fedora.raw
+
+# 3. Find the btrfs partition and extract it standalone (on the Linux VM;
+#    parted reports partition 4 = btrfs at byte 1156579328, size 4212112896).
+parted -s fedora.raw unit B print
+dd if=fedora.raw of=fedora-btrfs.raw bs=512 skip=2258944 count=8226783 status=none
+
+# 4. Confirm it is btrfs + record md5.
+btrfs inspect-internal dump-super -f fedora-btrfs.raw   # magic _BHRfS_M [match]
+md5sum fedora-btrfs.raw                                 # 2e91a6d3...066d
+
+# 5. Run the env-gated Tier-1 test.
+BTRFS_FEDORA_ORACLE=/tmp/btrfs_fedora/fedora-btrfs.raw cargo test -p btrfs-core --test tier1_fedora
+```
 
 ## Committed files (index)
 

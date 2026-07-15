@@ -8,3 +8,11 @@
 # extracted superblock fixture (btrfs_superblock.bin) and the oracle TEXT
 # outputs / provenance are committed. Re-mint from the recorded mkfs commands.
 /tests/data/*.img
+
+# The Tier-1 real-world corpus (downloaded Fedora Cloud qcow2 + the extracted
+# btrfs partition raw) is large (~469 MB) and freely re-downloadable — never
+# committed. The env-gated tier1_fedora test reads it on demand via
+# BTRFS_FEDORA_ORACLE; provenance is recorded in tests/data/README.md.
+*.qcow2
+/tests/data/fedora-btrfs.raw
+/tests/data/fedora.raw
