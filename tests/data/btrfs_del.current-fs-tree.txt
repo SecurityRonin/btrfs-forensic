@@ -1,0 +1,36 @@
+btrfs-progs v6.6.3
+leaf 30687232 items 7 free space 15644 generation 8 owner FS_TREE
+leaf 30687232 flags 0x1(WRITTEN) backref revision 1
+fs uuid 7a185907-3df6-499f-a2ed-d019f90210b5
+chunk uuid a211a789-e9fe-4edb-a5ff-3b9f6f0a29d7
+	item 0 key (256 INODE_ITEM 0) itemoff 16123 itemsize 160
+		generation 3 transid 8 size 16 nbytes 16384
+		block group 0 mode 40755 links 1 uid 0 gid 0 rdev 0
+		sequence 3 flags 0x0(none)
+		atime 1783941384.302053735 (2026-07-13 19:16:24)
+		ctime 1783941384.306053735 (2026-07-13 19:16:24)
+		mtime 1783941384.306053735 (2026-07-13 19:16:24)
+		otime 1783941384.0 (2026-07-13 19:16:24)
+	item 1 key (256 INODE_REF 256) itemoff 16111 itemsize 12
+		index 0 namelen 2 name: ..
+	item 2 key (256 DIR_ITEM 4064529625) itemoff 16073 itemsize 38
+		location key (258 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 8
+		name: keep.txt
+	item 3 key (256 DIR_INDEX 3) itemoff 16035 itemsize 38
+		location key (258 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 8
+		name: keep.txt
+	item 4 key (258 INODE_ITEM 0) itemoff 15875 itemsize 160
+		generation 7 transid 7 size 17 nbytes 17
+		block group 0 mode 100600 links 1 uid 0 gid 0 rdev 0
+		sequence 4 flags 0x0(none)
+		atime 1783941384.269053735 (2026-07-13 19:16:24)
+		ctime 1783941384.269053735 (2026-07-13 19:16:24)
+		mtime 1783941384.269053735 (2026-07-13 19:16:24)
+		otime 1783941384.269053735 (2026-07-13 19:16:24)
+	item 5 key (258 INODE_REF 256) itemoff 15857 itemsize 18
+		index 3 namelen 8 name: keep.txt
+	item 6 key (258 EXTENT_DATA 0) itemoff 15819 itemsize 38
+		generation 7 type 0 (inline)
+		inline extent data size 17 ram_bytes 17 compression 0 (none)

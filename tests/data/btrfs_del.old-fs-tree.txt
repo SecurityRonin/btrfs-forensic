@@ -1,0 +1,57 @@
+btrfs-progs v6.6.3
+leaf 30507008 items 12 free space 15158 generation 7 owner FS_TREE
+leaf 30507008 flags 0x1(WRITTEN) backref revision 1
+fs uuid 7a185907-3df6-499f-a2ed-d019f90210b5
+chunk uuid a211a789-e9fe-4edb-a5ff-3b9f6f0a29d7
+	item 0 key (256 INODE_ITEM 0) itemoff 16123 itemsize 160
+		generation 3 transid 7 size 36 nbytes 16384
+		block group 0 mode 40755 links 1 uid 0 gid 0 rdev 0
+		sequence 2 flags 0x0(none)
+		atime 1783941384.0 (2026-07-13 19:16:24)
+		ctime 1783941384.269053735 (2026-07-13 19:16:24)
+		mtime 1783941384.269053735 (2026-07-13 19:16:24)
+		otime 1783941384.0 (2026-07-13 19:16:24)
+	item 1 key (256 INODE_REF 256) itemoff 16111 itemsize 12
+		index 0 namelen 2 name: ..
+	item 2 key (256 DIR_ITEM 3675468270) itemoff 16071 itemsize 40
+		location key (257 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 10
+		name: secret.txt
+	item 3 key (256 DIR_ITEM 4064529625) itemoff 16033 itemsize 38
+		location key (258 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 8
+		name: keep.txt
+	item 4 key (256 DIR_INDEX 2) itemoff 15993 itemsize 40
+		location key (257 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 10
+		name: secret.txt
+	item 5 key (256 DIR_INDEX 3) itemoff 15955 itemsize 38
+		location key (258 INODE_ITEM 0) type FILE
+		transid 7 data_len 0 name_len 8
+		name: keep.txt
+	item 6 key (257 INODE_ITEM 0) itemoff 15795 itemsize 160
+		generation 7 transid 7 size 80 nbytes 80
+		block group 0 mode 100600 links 1 uid 0 gid 0 rdev 0
+		sequence 2 flags 0x0(none)
+		atime 1783941384.266053735 (2026-07-13 19:16:24)
+		ctime 1783941384.267053735 (2026-07-13 19:16:24)
+		mtime 1783941384.267053735 (2026-07-13 19:16:24)
+		otime 1783941384.266053735 (2026-07-13 19:16:24)
+	item 7 key (257 INODE_REF 256) itemoff 15775 itemsize 20
+		index 2 namelen 10 name: secret.txt
+	item 8 key (257 EXTENT_DATA 0) itemoff 15674 itemsize 101
+		generation 7 type 0 (inline)
+		inline extent data size 80 ram_bytes 80 compression 0 (none)
+	item 9 key (258 INODE_ITEM 0) itemoff 15514 itemsize 160
+		generation 7 transid 7 size 17 nbytes 17
+		block group 0 mode 100600 links 1 uid 0 gid 0 rdev 0
+		sequence 4 flags 0x0(none)
+		atime 1783941384.269053735 (2026-07-13 19:16:24)
+		ctime 1783941384.269053735 (2026-07-13 19:16:24)
+		mtime 1783941384.269053735 (2026-07-13 19:16:24)
+		otime 1783941384.269053735 (2026-07-13 19:16:24)
+	item 10 key (258 INODE_REF 256) itemoff 15496 itemsize 18
+		index 3 namelen 8 name: keep.txt
+	item 11 key (258 EXTENT_DATA 0) itemoff 15458 itemsize 38
+		generation 7 type 0 (inline)
+		inline extent data size 17 ram_bytes 17 compression 0 (none)
