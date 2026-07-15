@@ -27,3 +27,8 @@ exclude = ["/fuzz", "/.github", "/docs", "/tests"]
 thiserror = { workspace = true }
 # CRC32c verification of the superblock (btrfs default checksum).
 crc = { workspace = true }
+# Extent decompression (batteries-included: always compiled in — an examiner
+# must decode compressed content from the zero-config path, no feature flag).
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
+lzo = { workspace = true }

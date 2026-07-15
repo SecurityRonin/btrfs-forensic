@@ -347,6 +347,357 @@ fn lying_ram_bytes_on_compressed_extent_is_rejected() {
     );
 }
 
+// ---- Compression classifier, unsupported codec, corrupt-stream fail-loud ----
+
+#[test]
+fn compression_from_byte_classifies_every_algorithm() {
+    assert_eq!(Compression::from_byte(0), Compression::None);
+    assert_eq!(Compression::from_byte(1), Compression::Zlib);
+    assert_eq!(Compression::from_byte(2), Compression::Lzo);
+    assert_eq!(Compression::from_byte(3), Compression::Zstd);
+    // An unknown codec surfaces its raw byte (fail-loud), never a silent None.
+    assert_eq!(Compression::from_byte(9), Compression::Other(9));
+}
+
+#[test]
+fn decompress_none_returns_source_truncated_to_ram_bytes() {
+    // Compression::None: the source *is* the content, truncated to ram_bytes.
+    let src = b"raw-uncompressed-inline-bytes";
+    let out = decompress_extent(Compression::None, src, 10, SECTORSIZE).unwrap();
+    assert_eq!(out, b"raw-uncomp");
+}
+
+#[test]
+fn decompress_unsupported_codec_is_loud_with_the_byte() {
+    // An unsupported/unknown codec fails loud, naming the offending byte.
+    let err = decompress_extent(Compression::Other(9), b"anything", 16, SECTORSIZE).unwrap_err();
+    match err {
+        BtrfsError::Truncated {
+            structure, need, ..
+        } => {
+            assert!(
+                structure.contains("unsupported codec"),
+                "structure: {structure}"
+            );
+            assert_eq!(need, 9, "the offending codec byte is shown");
+        }
+        other => panic!("expected a loud unsupported-codec error, got {other:?}"),
+    }
+}
+
+#[test]
+fn corrupt_zlib_stream_fails_loud() {
+    let err = decompress_extent(
+        Compression::Zlib,
+        b"\x78\x9c\xff\xff\xff\xff",
+        64,
+        SECTORSIZE,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "corrupt zlib is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn corrupt_zstd_frame_fails_loud() {
+    // A truncated zstd frame: the header parses but the body cannot complete.
+    const ZSTD_TRUNC_HEX: &str =
+        "28b52ffd2047390200636f6d7072657373656420726567756c617220657874656e7420636f6e7465";
+    let err =
+        decompress_extent(Compression::Zstd, &hx(ZSTD_TRUNC_HEX), 71, SECTORSIZE).unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "corrupt zstd is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn bad_zstd_frame_header_fails_loud() {
+    // Bytes that are not a zstd magic at all: the frame-header parse fails loud.
+    let err =
+        decompress_extent(Compression::Zstd, b"not-a-zstd-frame", 71, SECTORSIZE).unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "bad zstd header is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn corrupt_lzo_segment_fails_loud() {
+    // A btrfs-LZO frame whose segment payload is not valid LZO1X: the `lzo`
+    // decoder rejects it and we surface a loud, named error.
+    // total=12, seg_len=4, then 4 bytes that are not a valid LZO1X block.
+    let frame = {
+        let mut f = Vec::new();
+        f.extend_from_slice(&12u32.to_le_bytes()); // total
+        f.extend_from_slice(&4u32.to_le_bytes()); // seg_len
+        f.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]); // garbage LZO block
+        f
+    };
+    let err = decompress_extent(Compression::Lzo, &frame, 64, SECTORSIZE).unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "corrupt lzo is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn lzo_multi_segment_skips_sector_padding() {
+    // A two-segment btrfs-LZO frame where the second segment header would cross a
+    // sector boundary, so the writer padded to the next sector. With a 64-byte
+    // sectorsize the reader must skip that padding and decode both segments —
+    // exercising the per-sector-framing branch that a single segment never hits.
+    const LZO_MULTI_HEX: &str = "520000003600000043414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414111000000000e0000001b42424242424242424242110000";
+    const LZO_MULTI_SHA: &str = "79abb44eb206a748c07af243c29c18fb6c240dc0bbbbaf0398b2b1fbfcd7fdfa";
+    let out = decompress_extent(Compression::Lzo, &hx(LZO_MULTI_HEX), 60, 64).unwrap();
+    assert_eq!(out.len(), 60);
+    assert_eq!(&out[..50], &b"A".repeat(50)[..]);
+    assert_eq!(&out[50..], b"BBBBBBBBBB");
+    assert_eq!(
+        sha256_hex(&out),
+        LZO_MULTI_SHA,
+        "both segments decoded across the pad"
+    );
+}
+
+// ---- Unknown extent type + sparse tail (always-on crafted leaves) ----
+
+#[test]
+fn unknown_extent_type_is_a_loud_error() {
+    // An EXTENT_DATA item with an unrecognized type byte (99) must fail loud with
+    // the offending value, never silently yield short/empty content.
+    let mut ext = vec![0u8; 53];
+    ext[20] = 99; // type
+    let leaf = build_fs_leaf(&[(310, 1, 0, inode_item(10, 0o100_644)), (310, 108, 0, ext)]);
+    let node = Node::parse(&leaf).unwrap();
+    let err = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 310).unwrap_err();
+    match err {
+        BtrfsError::Truncated {
+            structure, need, ..
+        } => {
+            assert!(
+                structure.contains("unknown extent type"),
+                "structure: {structure}"
+            );
+            assert_eq!(need, 99, "the offending type byte is shown");
+        }
+        other => panic!("expected a loud unknown-type error, got {other:?}"),
+    }
+}
+
+#[test]
+fn regular_extent_with_no_chunk_mapping_is_a_loud_error() {
+    // A regular extent (disk_bytenr != 0) whose disk_bytenr no chunk maps must
+    // fail loud (never silent empty content) — the error propagates out of
+    // read_file_from_leaf.
+    let leaf = build_fs_leaf(&[
+        (312, 1, 0, inode_item(64, 0o100_644)),
+        (312, 108, 0, extent_reg(0, 0xdead_beef, 64, 0, 64)),
+    ]);
+    let node = Node::parse(&leaf).unwrap();
+    let err =
+        read_file_from_leaf(&node, &[0u8; 4096], &Default::default(), SECTORSIZE, 312).unwrap_err();
+    match err {
+        BtrfsError::Truncated {
+            structure, need, ..
+        } => {
+            assert!(
+                structure.contains("no chunk mapping"),
+                "structure: {structure}"
+            );
+            assert_eq!(need, 0xdead_beef, "the unmapped disk_bytenr is shown");
+        }
+        other => panic!("expected a loud no-mapping error, got {other:?}"),
+    }
+}
+
+#[test]
+fn uncompressed_regular_extent_out_of_image_is_a_loud_error() {
+    // A regular extent that maps to a physical offset past the image end must
+    // fail loud, never over-read or silently truncate.
+    // Craft an image + identity chunk mapping, then point the extent past EOF.
+    let chunk_len = 2u64 * 1024 * 1024;
+    let img = {
+        let mut i = vec![0u8; 1024 * 1024 + 4096];
+        let cl = build_chunk_leaf_identity(chunk_len);
+        i[0..cl.len()].copy_from_slice(&cl);
+        i
+    };
+    let sb = Superblock::parse(&build_superblock_identity_chunk(chunk_len)).unwrap();
+    let map = btrfs_core::ChunkMap::walk(&img, &sb).unwrap();
+    // Regular, uncompressed, disk_bytenr inside the mapped chunk but the read
+    // window (disk_bytenr + num_bytes) runs past the image length.
+    let disk_bytenr = (img.len() as u64) - 100; // maps identity; +4096 overruns EOF
+    let leaf = build_fs_leaf(&[
+        (313, 1, 0, inode_item(4096, 0o100_644)),
+        (313, 108, 0, extent_reg(0, disk_bytenr, 4096, 0, 4096)),
+    ]);
+    let node = Node::parse(&leaf).unwrap();
+    let err = read_file_from_leaf(&node, &img, &map, sb.sectorsize, 313).unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "out-of-image regular extent is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn sparse_tail_zero_fills_to_inode_size() {
+    // A NO_HOLES file: one 20-byte inline extent, but the inode size is 100. The
+    // logical tail past the extent is a sparse hole zero-filled up to `size`.
+    let mut inline = vec![0u8; 21 + 20];
+    inline[8..16].copy_from_slice(&20u64.to_le_bytes()); // ram_bytes
+                                                         // type 0 inline, compression 0 (bytes 16..21 already zero)
+    inline[21..41].copy_from_slice(b"twenty-byte-inline!!");
+    let leaf = build_fs_leaf(&[
+        (311, 1, 0, inode_item(100, 0o100_644)),
+        (311, 108, 0, inline),
+    ]);
+    let node = Node::parse(&leaf).unwrap();
+    let out = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 311).unwrap();
+    assert_eq!(out.len(), 100, "content extends to inode size");
+    assert_eq!(&out[..20], b"twenty-byte-inline!!");
+    assert!(out[20..].iter().all(|&b| b == 0), "sparse tail is zeros");
+}
+
+// ---- Compressed REGULAR extent over a crafted, walkable image ----
+//
+// The self-mint's regular extent (mid.bin) is uncompressed, so a compressed
+// regular extent needs a crafted image: an FS_TREE leaf (inode + a zstd-
+// compressed EXTENT_DATA) plus a sys_chunk_array that identity-maps both the
+// leaf's logical address and the extent's disk_bytenr. `ChunkMap::walk`
+// bootstraps the map from that array; `read_file_from_leaf` then translates the
+// extent, reads its compressed bytes, and decompresses them.
+
+#[test]
+fn compressed_regular_extent_reads_and_decompresses() {
+    // A tiny zstd blob (independent encoder) at a known physical/logical offset.
+    const ZSTD_BLOB_HEX: &str = "28b52ffd2047390200636f6d7072657373656420726567756c617220657874656e7420636f6e74656e7420666f722074686520637261667465642d696d61676520636f76657261676520746573742e0a";
+    const PLAIN_LEN: u64 = 71;
+    const PLAIN_SHA: &str = "3619c0f9faefa7c69fc4c167e622dda5b928db910d9bc33d84cbc59d18b93b5a";
+    let blob = hx(ZSTD_BLOB_HEX);
+
+    // Logical layout: the extent's compressed bytes live at logical
+    // DISK_BYTENR, which the identity chunk maps to the same physical offset.
+    const FS_LEAF_LOGICAL: u64 = 0; // not used here (we pass the leaf directly)
+    const DISK_BYTENR: u64 = 0x100_000; // 1 MiB, inside the mapped chunk
+    let _ = FS_LEAF_LOGICAL;
+
+    // A regular, compressed EXTENT_DATA item pointing at DISK_BYTENR.
+    let mut ext = vec![0u8; 53];
+    ext[8..16].copy_from_slice(&PLAIN_LEN.to_le_bytes()); // ram_bytes
+    ext[16] = 3; // compression = zstd
+    ext[20] = 1; // type = regular
+    ext[21..29].copy_from_slice(&DISK_BYTENR.to_le_bytes()); // disk_bytenr (logical)
+    ext[29..37].copy_from_slice(&(blob.len() as u64).to_le_bytes()); // disk_num_bytes
+    ext[37..45].copy_from_slice(&0u64.to_le_bytes()); // offset (whole extent)
+    ext[45..53].copy_from_slice(&PLAIN_LEN.to_le_bytes()); // num_bytes
+    let leaf = build_fs_leaf(&[
+        (320, 1, 0, inode_item(PLAIN_LEN, 0o100_644)),
+        (320, 108, 0, ext),
+    ]);
+    let node = Node::parse(&leaf).unwrap();
+
+    // Build an image large enough to hold the zstd blob at physical DISK_BYTENR,
+    // plus a superblock whose sys_chunk_array identity-maps a chunk covering
+    // [0, chunk_len) so DISK_BYTENR translates. `ChunkMap::walk` needs a valid
+    // chunk_root node inside that chunk too, so place one at physical 0.
+    let chunk_len = 2u64 * 1024 * 1024; // 2 MiB SYSTEM chunk, identity-mapped
+    let img_len = (DISK_BYTENR as usize) + blob.len() + 16;
+    let mut img = vec![0u8; img_len.max(1024 * 1024 + 4096)];
+    // Compressed bytes at physical == logical DISK_BYTENR.
+    img[DISK_BYTENR as usize..DISK_BYTENR as usize + blob.len()].copy_from_slice(&blob);
+
+    // A chunk-tree leaf at physical 0 (chunk_root) holding ONE CHUNK_ITEM that
+    // identity-maps [0, chunk_len); `walk` adds it to the map, so the extent's
+    // disk_bytenr translates. (A data chunk lives in the chunk tree on a real
+    // image; the sys_chunk_array only bootstraps reading the chunk tree itself.)
+    let chunk_leaf = build_chunk_leaf_identity(chunk_len);
+    img[0..chunk_leaf.len()].copy_from_slice(&chunk_leaf);
+
+    // Superblock: nodesize, chunk_root=0 (logical, identity-mapped), and a
+    // sys_chunk_array with one SYSTEM chunk [0, chunk_len) at physical 0.
+    let sb_bytes = build_superblock_identity_chunk(chunk_len);
+    let sb = Superblock::parse(&sb_bytes).unwrap();
+    let map = btrfs_core::ChunkMap::walk(&img, &sb).expect("walk crafted chunk tree");
+
+    let out = read_file_from_leaf(&node, &img, &map, sb.sectorsize, 320)
+        .expect("read compressed regular extent");
+    assert_eq!(out.len(), PLAIN_LEN as usize);
+    assert_eq!(
+        sha256_hex(&out),
+        PLAIN_SHA,
+        "compressed regular extent -> plaintext"
+    );
+}
+
+/// A chunk-tree leaf (owner CHUNK_TREE, level 0) holding one CHUNK_ITEM that
+/// identity-maps `[0, chunk_len)` to physical `[0, chunk_len)` on device 1, with
+/// a fixed crc so `Node::parse` accepts it. `ChunkMap::walk` adds this chunk to
+/// the map so an extent's `disk_bytenr` in that range translates.
+fn build_chunk_leaf_identity(chunk_len: u64) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&0u64.to_le_bytes()); // bytenr (own logical)
+    node[0x58..0x60].copy_from_slice(&3u64.to_le_bytes()); // owner = CHUNK_TREE
+    node[0x60..0x64].copy_from_slice(&1u32.to_le_bytes()); // nritems 1
+    node[0x64] = 0; // leaf
+
+    // btrfs_chunk data: 48-byte header + one 32-byte stripe, identity-mapped.
+    let mut chunk = vec![0u8; 48 + 32];
+    chunk[0..8].copy_from_slice(&chunk_len.to_le_bytes()); // length
+    chunk[24..32].copy_from_slice(&0x1u64.to_le_bytes()); // type DATA
+    chunk[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+    chunk[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+    chunk[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+    chunk[56..64].copy_from_slice(&0u64.to_le_bytes()); // stripe offset (identity)
+
+    // One btrfs_item: key (FIRST_CHUNK_TREE=256, CHUNK_ITEM=228, logical 0), data
+    // laid at the tail of the node (data_offset relative to header end).
+    let data_tail = NODESIZE - chunk.len();
+    let io = HDR_END; // first item header
+    node[io..io + 8].copy_from_slice(&256u64.to_le_bytes()); // objectid
+    node[io + 8] = 228; // CHUNK_ITEM
+    node[io + 9..io + 17].copy_from_slice(&0u64.to_le_bytes()); // offset (logical start)
+    node[io + 17..io + 21].copy_from_slice(&((data_tail - HDR_END) as u32).to_le_bytes());
+    node[io + 21..io + 25].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+    node[data_tail..data_tail + chunk.len()].copy_from_slice(&chunk);
+
+    let c = crc32c_iscsi(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+    node
+}
+
+/// A superblock byte buffer whose sys_chunk_array holds one SYSTEM chunk
+/// identity-mapping `[0, chunk_len)` (physical == logical), `chunk_root` = 0.
+fn build_superblock_identity_chunk(chunk_len: u64) -> Vec<u8> {
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65536u64.to_le_bytes()); // bytenr
+    sb[0x50..0x58].copy_from_slice(&0u64.to_le_bytes()); // root (unused here)
+    sb[0x58..0x60].copy_from_slice(&0u64.to_le_bytes()); // chunk_root logical 0
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+                                                                      // sys_chunk_array @0x32b: key (FIRST_CHUNK_TREE=256, CHUNK_ITEM=228, logical 0)
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes());
+    sb[arr + 8] = 228;
+    sb[arr + 9..arr + 17].copy_from_slice(&0u64.to_le_bytes()); // logical 0
+    let ci = {
+        let mut d = vec![0u8; 48 + 32];
+        d[0..8].copy_from_slice(&chunk_len.to_le_bytes()); // length
+        d[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // type SYSTEM
+        d[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+        d[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+        d[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+        d[56..64].copy_from_slice(&0u64.to_le_bytes()); // stripe offset (identity)
+        d
+    };
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes()); // sys_array_size
+    sb
+}
+
 // A minimal, self-contained sha256 for the tests (reproduces `sha256sum`),
 // kept test-local so btrfs-core takes no hashing dependency.
 mod sha256 {

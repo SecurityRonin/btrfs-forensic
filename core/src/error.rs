@@ -29,4 +29,19 @@ pub enum BtrfsError {
         /// The eight raw bytes read at superblock offset 0x40.
         bytes: [u8; 8],
     },
+
+    /// A length/size field from the untrusted image demanded an allocation far
+    /// larger than the image itself could justify — a classic allocation-bomb.
+    ///
+    /// Carries the offending value and the bound it exceeded so the report hands
+    /// the investigator the evidence, never a bare "too big" (fail-loud).
+    #[error("allocation bomb: {field} claims {claimed} bytes, exceeding the {bound}-byte bound")]
+    AllocationBomb {
+        /// The name of the length field that overflowed the bound.
+        field: &'static str,
+        /// The absurd byte count the image field claimed.
+        claimed: u64,
+        /// The largest value that could be legitimate (e.g. the image length).
+        bound: u64,
+    },
 }

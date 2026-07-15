@@ -65,6 +65,11 @@ pub const INODE_ITEM_SIZE: usize = 160;
 /// `sizeof(btrfs_timespec)` on disk: `sec(u64) + nsec(u32)` = 12 bytes.
 pub const TIMESTAMP_SIZE: usize = 12;
 
+/// The `btrfs_inode_item.size` (logical file size) field offset — exposed so the
+/// EXTENT_DATA reader can truncate assembled content to the inode's size without
+/// re-decoding the whole inode.
+pub(crate) const INODE_SIZE_OFFSET: usize = 16;
+
 // `btrfs_inode_item` field offsets (verified vs dump-tree + stat).
 mod inode_off {
     pub const GENERATION: usize = 0;

@@ -227,6 +227,56 @@ the root tree (`fs_tree_root` → `bytenr 30654464`). Every offset above matched
 the on-disk-format facts in `docs/RESEARCH.md` — no draft offset needed
 correcting for P2.
 
+## P3 ground truth (EXTENT_DATA → file content)
+
+The FS_TREE leaf's `EXTENT_DATA` (key type **108**) items were decoded and
+verified byte-for-byte against `btrfs inspect-internal dump-tree` and the
+mount-ro content sha256 (`btrfs.content.sha256`):
+
+| inode | file | EXTENT_DATA | dump-tree | content sha256 (mount oracle) |
+|---|---|---|---|---|
+| 257 | `small.txt` | type 0 inline, ram_bytes 26, comp none | `item 10 (257 EXTENT_DATA 0) itemsize 47` | `9ca0c72a…c10c` |
+| 258 | `mid.bin` | type 1 regular, disk_bytenr 13631488, num_bytes 65536, comp none | `item 13 (258 EXTENT_DATA 0) itemsize 53` | `7c2c6d9f…eaef` |
+| 261 | `dir/sub/leaf.txt` | type 0 inline, ram_bytes 20, comp none | `item 24 (261 EXTENT_DATA 0) itemsize 41` | `c7a34a53…9cad` |
+
+`btrfs_file_extent_item` offsets (verified vs dump-tree; matched the task brief
+exactly, no shift): `generation@0, ram_bytes@8, compression@16, encryption@17,
+other_encoding(u16)@18, type@20`; then **inline** data at `@21`, or **regular/
+prealloc** `disk_bytenr@21, disk_num_bytes@29, offset@37, num_bytes@45`
+(`disk_bytenr == 0` = a hole). small.txt/leaf.txt are inline (data lives in the
+committed `btrfs_fs_tree_leaf.bin`, so always-on); mid.bin is a regular extent
+whose data is in the DATA chunk (physical == logical 13631488), so its test is
+env-gated on `BTRFS_ORACLE_IMG`.
+
+### Compression decoder fixtures (generated in-test, not committed)
+
+The self-mint's small files are all uncompressed, so the zlib / zstd / btrfs-LZO
+decoders are validated against blobs produced by **independent encoders** and
+round-tripped through the `flate2` / `ruzstd` / `lzo` crates (Tier-2: an
+independent oracle authored the compressed bytes; ground truth is the plaintext
+sha256). The blobs are embedded as hex constants in `core/tests/extent.rs`;
+their generators (verbatim, reproducible):
+
+```python
+# zlib + zstd over a 4096-byte sector of repeated text (Python 3):
+import zlib, zstandard
+orig = (b"The quick brown fox jumps over the lazy dog. " * 200)[:4096]
+zlib.compress(orig, 6)                                  # -> ZLIB_HEX
+zstandard.ZstdCompressor(level=3).compress(orig)        # -> ZSTD_HEX
+# plaintext sha256: ec5472468ce7895a8ed98c8637b2ccc0686e269aae0dcdd0eab05ed2421f4125
+
+# btrfs-LZO frame: a hand-built LZO1X literal run wrapped in btrfs framing
+# (4-byte LE total incl. header, then 4-byte LE seg_len + one LZO1X literal
+# block: first byte 17+L for a run of L literals, then the bytes, then the
+# 0x11 00 00 end marker). Decoded by the `lzo` crate. Framing per the kernel
+# fs/btrfs/lzo.c: a segment header never crosses a sectorsize boundary.
+```
+
+The compressed **regular** extent path (a zstd extent whose bytes live in a data
+chunk) is covered by a crafted, `ChunkMap::walk`-able image built in-test
+(`build_chunk_leaf_identity` + `build_superblock_identity_chunk`) — the self-mint
+has no compressed regular file to exercise it.
+
 ## Field-offset note (Doer-Checker)
 
 The scalar offsets in `btrfs_super_block` were **verified byte-for-byte against
@@ -327,7 +377,7 @@ BTRFS_FEDORA_ORACLE=/tmp/btrfs_fedora/fedora-btrfs.raw cargo test -p btrfs-core 
 | `btrfs.chunk-tree.txt` | `dump-tree -b 22036480` | **P1** full chunk-tree walk oracle (DATA/SYSTEM/METADATA chunks) |
 | `btrfs.chunk-node.txt` | `dump-tree -b 22036480` | **P1** node ground truth for `btrfs_chunk_root.bin` |
 | `btrfs.full-tree.txt` | `dump-tree` (all trees) | **P2** root-tree + FS-tree ground truth (root-item / inode / dir-item) |
-| `btrfs.content.sha256` | `sha256sum` on mount | P5 file-content Tier-1 (later phase) |
+| `btrfs.content.sha256` | `sha256sum` on mount | **P3 file-content oracle** (`read_file` vs mount-ro sha256) |
 | `btrfs.mkfs.txt` | `mkfs.btrfs` stdout | mint provenance |
 
 ## Image hash (gitignored artifact, provenance only)

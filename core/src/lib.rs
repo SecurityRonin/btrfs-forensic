@@ -17,6 +17,13 @@
 //! mode, the four timestamps), directory entries (`DIR_ITEM`/`DIR_INDEX`), and
 //! resolve a slash-separated path from the FS_TREE root directory.
 //!
+//! Phase 3 adds **EXTENT_DATA → file content**: [`read_file`] /
+//! [`read_by_path_content`] assemble a file's bytes from its
+//! `btrfs_file_extent_item`s (inline, regular, prealloc, hole zero-fill),
+//! truncated to the inode's size, decompressing zlib / LZO / zstd extents via
+//! [`decompress_extent`] (batteries-included — the decoders are always compiled
+//! in, never feature-gated).
+//!
 //! Import path is `btrfs_core` (the bare `btrfs` crate on crates.io is an
 //! unrelated live-FS ioctl wrapper we do not shadow): `use btrfs_core::Superblock;`.
 //!
@@ -34,6 +41,7 @@ pub mod bytes;
 mod chunk;
 pub mod crc;
 mod error;
+mod extent;
 mod fstree;
 mod node;
 mod superblock;
@@ -44,6 +52,10 @@ pub use chunk::{
 };
 pub use crc::{superblock_crc_status, verify_superblock_crc32c, CsumType, BTRFS_CSUM_SIZE};
 pub use error::BtrfsError;
+pub use extent::{
+    decompress_extent, read_by_path_content, read_file, read_file_from_leaf, Compression,
+    EXTENT_DATA_KEY,
+};
 pub use fstree::{
     fs_tree_root, list_dir, read_by_path, read_inode, DirEntry, DirItemType, FsTreeRoot, Inode,
     Timestamp, DIR_INDEX_KEY, DIR_ITEM_KEY, FS_TREE_OBJECTID, FS_TREE_ROOT_DIR_OBJECTID,
