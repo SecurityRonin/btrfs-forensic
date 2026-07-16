@@ -5,9 +5,16 @@ members = ["core", "forensic"]
 # Single source of truth for fields shared (identical) by every member (DRY).
 # `version` is NOT hoisted: core and forensic are versioned independently, so
 # each keeps its own `version` inline.
+#
+# `rust-version` is the CI-verified MSRV floor. It is NOT the usual fleet library
+# floor (1.75/1.80): the batteries-included pure-Rust zstd decoder (`ruzstd 0.8`)
+# declares `rust-version = 1.87`, so that decoder — not our own code — dictates
+# the floor. Per the Batteries-Included policy ("MSRV yields to capability") we
+# keep the always-compiled zstd path and take the 1.87 floor rather than
+# feature-gate the decoder to advertise a lower one. Verified by the `msrv` CI job.
 [workspace.package]
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/btrfs-forensic"
 homepage = "https://github.com/SecurityRonin/btrfs-forensic"

@@ -12,6 +12,10 @@ readme.workspace = true
 authors.workspace = true
 keywords = ["forensics", "btrfs", "dfir", "carving", "anti-forensics"]
 categories.workspace = true
+# Integration tests read their oracle images from the repo-root tests/data via
+# env-gated paths (outside this package); they are repo-CI artifacts, not
+# consumer-facing. Excluding them keeps the published tarball to just src/.
+exclude = ["/fuzz", "/.github", "/docs", "/tests"]
 
 [dependencies]
 btrfs-core = { workspace = true }

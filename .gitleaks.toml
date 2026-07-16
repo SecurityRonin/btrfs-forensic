@@ -1,0 +1,16 @@
+# gitleaks configuration — extends the default ruleset and allowlists known
+# false positives. The committed btrfs fixtures under tests/data are raw
+# on-disk filesystem bytes (superblock, chunk-root, fs-tree leaf blocks); their
+# high-entropy regions (fsids, csums, packed keys) can trip gitleaks' generic
+# high-entropy rules even though they hold no secrets. Scoped to the fixture
+# paths so real secrets anywhere else still surface.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "btrfs on-disk fixtures are filesystem bytes, not secrets"
+paths = [
+  '''tests/data/.*\.bin$''',
+  '''tests/data/.*\.txt$''',
+  '''tests/data/.*\.sha256$''',
+]

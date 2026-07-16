@@ -1,8 +1,10 @@
 /target
 
-# Pure-library workspace — the lock is not committed (fleet policy commits
-# Cargo.lock only in binary/app repos, so downstream consumers resolve freely).
-/Cargo.lock
+# Cargo.lock IS committed: CI must resolve the exact batteries-included graph
+# (the always-compiled zlib/LZO/zstd decoders) rather than a fresh resolution
+# that could pull a license-tainted or edition-incompatible transitive. The lock
+# also backs the CI freshness gate. (Downstream library consumers still resolve
+# their own graph — a committed lock does not constrain them.)
 
 # The large minted btrfs oracle image is gitignored (512 MiB) — only the small
 # extracted superblock fixture (btrfs_superblock.bin) and the oracle TEXT
@@ -16,3 +18,10 @@
 *.qcow2
 /tests/data/fedora-btrfs.raw
 /tests/data/fedora.raw
+
+# OS / editor cruft (belt-and-suspenders alongside a machine-wide core.excludesfile).
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
