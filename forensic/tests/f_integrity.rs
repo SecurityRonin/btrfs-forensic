@@ -510,6 +510,131 @@ fn interior_node_descent_reaches_a_corrupt_child_leaf() {
     );
 }
 
+// ── scan_orphans over a walkable image whose ROOT_TREE names the FS_TREE ──────
+//
+// The crafted-orphan test above reaches the orphan through the BACKUP roots
+// (base_image's root-tree leaf is zeroed, so fs_tree_root returns Err). This
+// drives the OTHER path: a walkable image whose ROOT_TREE leaf holds the FS_TREE
+// ROOT_ITEM, so fs_tree_root SUCCEEDS and scan_orphans reaches the current FS_TREE
+// leaf directly — the live-root-tree orphan scan the oracle test exercises.
+
+const HDR_END_I: usize = 101;
+const ITEM_STRIDE_I: usize = 25;
+const CHUNK_LEN_I: u64 = 4 * 1024 * 1024;
+const ROOT_LOGICAL_I: u64 = 0x20_000;
+const FS_LEAF_LOGICAL_I: u64 = 0x30_000;
+
+/// Build a leaf (`owner`, level 0) with `items = (objectid, type, key_off, data)`
+/// laid out backward from the node end, crc32c-sealed.
+fn build_leaf_i(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&30_654_464u64.to_le_bytes()); // bytenr
+    node[0x58..0x60].copy_from_slice(&owner.to_le_bytes());
+    node[0x60..0x64].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    node[0x64] = 0; // leaf
+    let mut tail = NODESIZE;
+    for (i, (oid, ty, koff, data)) in items.iter().enumerate() {
+        let io = HDR_END_I + i * ITEM_STRIDE_I;
+        node[io..io + 8].copy_from_slice(&oid.to_le_bytes());
+        node[io + 8] = *ty;
+        node[io + 9..io + 17].copy_from_slice(&koff.to_le_bytes());
+        tail -= data.len();
+        let doff = (tail - HDR_END_I) as u32;
+        node[io + 17..io + 21].copy_from_slice(&doff.to_le_bytes());
+        node[io + 21..io + 25].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        node[tail..tail + data.len()].copy_from_slice(data);
+    }
+    seal_node(&mut node);
+    node
+}
+
+/// A CHUNK_TREE leaf (chunk_root @0) identity-mapping `[0, CHUNK_LEN_I)`.
+fn build_chunk_leaf_i() -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x58..0x60].copy_from_slice(&3u64.to_le_bytes()); // owner CHUNK_TREE
+    node[0x60..0x64].copy_from_slice(&1u32.to_le_bytes());
+    node[0x64] = 0;
+    let mut chunk = vec![0u8; 48 + 32];
+    chunk[0..8].copy_from_slice(&CHUNK_LEN_I.to_le_bytes());
+    chunk[24..32].copy_from_slice(&0x1u64.to_le_bytes());
+    chunk[44..46].copy_from_slice(&1u16.to_le_bytes());
+    chunk[46..48].copy_from_slice(&1u16.to_le_bytes());
+    chunk[48..56].copy_from_slice(&1u64.to_le_bytes());
+    chunk[56..64].copy_from_slice(&0u64.to_le_bytes());
+    let data_tail = NODESIZE - chunk.len();
+    let io = HDR_END_I;
+    node[io..io + 8].copy_from_slice(&256u64.to_le_bytes());
+    node[io + 8] = 228;
+    node[io + 9..io + 17].copy_from_slice(&0u64.to_le_bytes());
+    node[io + 17..io + 21].copy_from_slice(&((data_tail - HDR_END_I) as u32).to_le_bytes());
+    node[io + 21..io + 25].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+    node[data_tail..data_tail + chunk.len()].copy_from_slice(&chunk);
+    seal_node(&mut node);
+    node
+}
+
+#[test]
+fn scan_orphans_reaches_current_fs_tree_via_root_tree() {
+    // Current FS_TREE leaf (owner 5) carrying an ORPHAN_ITEM (objectid -5, key
+    // type 48, offset = orphaned inode 257).
+    let orphan_oid = u64::MAX - 4;
+    let fs_leaf = build_leaf_i(
+        5, /* FS_TREE */
+        &[(orphan_oid, 48 /* ORPHAN_ITEM */, 257, vec![0u8; 0])],
+    );
+    // ROOT_TREE leaf: FS_TREE (objectid 5) ROOT_ITEM whose bytenr@176 = FS leaf.
+    let mut root_item = vec![0u8; 239];
+    root_item[176..184].copy_from_slice(&FS_LEAF_LOGICAL_I.to_le_bytes());
+    root_item[168..176].copy_from_slice(&256u64.to_le_bytes());
+    let root_leaf = build_leaf_i(
+        1, /* ROOT_TREE */
+        &[(5, 132 /* ROOT_ITEM */, 0, root_item)],
+    );
+
+    // Superblock: root = ROOT_LOGICAL_I, chunk_root 0, identity sys_chunk_array.
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65_536u64.to_le_bytes());
+    sb[0x48..0x50].copy_from_slice(&9u64.to_le_bytes()); // generation
+    sb[0x50..0x58].copy_from_slice(&ROOT_LOGICAL_I.to_le_bytes()); // root
+    sb[0x58..0x60].copy_from_slice(&0u64.to_le_bytes()); // chunk_root logical 0
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes());
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes());
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes());
+    sb[arr + 8] = 228;
+    sb[arr + 9..arr + 17].copy_from_slice(&0u64.to_le_bytes());
+    let ci = {
+        let mut d = vec![0u8; 48 + 32];
+        d[0..8].copy_from_slice(&CHUNK_LEN_I.to_le_bytes());
+        d[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // SYSTEM
+        d[44..46].copy_from_slice(&1u16.to_le_bytes());
+        d[46..48].copy_from_slice(&1u16.to_le_bytes());
+        d[48..56].copy_from_slice(&1u64.to_le_bytes());
+        d[56..64].copy_from_slice(&0u64.to_le_bytes());
+        d
+    };
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes());
+    reseal_sb(&mut sb, 4096);
+
+    let mut img = vec![0u8; CHUNK_LEN_I as usize];
+    img[0..NODESIZE].copy_from_slice(&build_chunk_leaf_i());
+    img[65_536..65_536 + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb);
+    img[ROOT_LOGICAL_I as usize..ROOT_LOGICAL_I as usize + NODESIZE].copy_from_slice(&root_leaf);
+    img[FS_LEAF_LOGICAL_I as usize..FS_LEAF_LOGICAL_I as usize + NODESIZE]
+        .copy_from_slice(&fs_leaf);
+
+    let anomalies = audit_image(&img);
+    assert!(
+        anomalies.iter().any(|a| matches!(
+            &a.kind,
+            AnomalyKind::OrphanedInode { inode } if *inode == 257
+        )),
+        "fs_tree_root must resolve the current FS_TREE so scan_orphans finds inode 257, got: {anomalies:?}"
+    );
+}
+
 // ── env-gated whole-image audit over the deletion oracle (real root tree) ─────
 
 #[test]

@@ -318,6 +318,143 @@ fn recover_deleted_malformed_input_does_not_panic() {
     assert!(btrfs_forensic::recover_deleted(&long_wrong_magic).is_empty());
 }
 
+// ── whole-image recover_deleted over a crafted walkable image (always-on) ─────
+//
+// full_image_recovers_deleted_file above needs the 256 MiB deletion oracle,
+// absent on CI. This drives the same whole-image entry point over a small crafted
+// walkable image: a superblock whose `root` names a ROOT_TREE leaf holding the
+// FS_TREE ROOT_ITEM (→ the CURRENT FS_TREE leaf), and whose btrfs_root_backup[0]
+// `fs_root` names an OLD FS_TREE leaf holding a deleted inode. recover_deleted
+// reads the current tree, diffs each backup FS_TREE, and carves the deletion.
+
+const SUPER_SIZE: usize = 4096;
+const SUPER_OFFSET: usize = 65_536;
+const CHUNK_LEN: u64 = 4 * 1024 * 1024;
+const ROOT_LOGICAL: u64 = 0x20_000; // ROOT_TREE leaf
+const CUR_FS_LOGICAL: u64 = 0x30_000; // current FS_TREE leaf
+const OLD_FS_LOGICAL: u64 = 0x40_000; // old (backup) FS_TREE leaf
+const BACKUP_ROOTS_OFFSET: usize = 0xb2b;
+const BACKUP_FS_ROOT_OFF: usize = 48; // btrfs_root_backup.fs_root
+
+/// A CHUNK_TREE leaf (chunk_root @ physical 0) identity-mapping `[0, CHUNK_LEN)`.
+fn build_chunk_leaf() -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&0u64.to_le_bytes()); // bytenr
+    node[0x58..0x60].copy_from_slice(&CHUNK_TREE_OBJECTID.to_le_bytes()); // owner
+    node[0x60..0x64].copy_from_slice(&1u32.to_le_bytes()); // nritems
+    node[0x64] = 0; // leaf
+    let mut chunk = vec![0u8; 48 + 32];
+    chunk[0..8].copy_from_slice(&CHUNK_LEN.to_le_bytes()); // length
+    chunk[24..32].copy_from_slice(&0x1u64.to_le_bytes()); // type DATA
+    chunk[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+    chunk[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+    chunk[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+    chunk[56..64].copy_from_slice(&0u64.to_le_bytes()); // stripe offset (identity)
+    let data_tail = NODESIZE - chunk.len();
+    let io = HDR_END;
+    node[io..io + 8].copy_from_slice(&256u64.to_le_bytes()); // FIRST_CHUNK_TREE
+    node[io + 8] = 228; // CHUNK_ITEM
+    node[io + 9..io + 17].copy_from_slice(&0u64.to_le_bytes()); // logical 0
+    node[io + 17..io + 21].copy_from_slice(&((data_tail - HDR_END) as u32).to_le_bytes());
+    node[io + 21..io + 25].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+    node[data_tail..data_tail + chunk.len()].copy_from_slice(&chunk);
+    let c = crc32c(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+    node
+}
+
+/// A superblock: magic, generation 8, `root` = ROOT_LOGICAL, `chunk_root` = 0,
+/// nodesize, an identity sys_chunk_array, and btrfs_root_backup[0].fs_root =
+/// OLD_FS_LOGICAL (the retained pre-delete FS_TREE root).
+fn build_super_with_backup(old_fs_root: u64) -> Vec<u8> {
+    let mut sb = vec![0u8; SUPER_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65536u64.to_le_bytes()); // bytenr
+    sb[0x48..0x50].copy_from_slice(&8u64.to_le_bytes()); // generation
+    sb[0x50..0x58].copy_from_slice(&ROOT_LOGICAL.to_le_bytes()); // root
+    sb[0x58..0x60].copy_from_slice(&0u64.to_le_bytes()); // chunk_root logical 0
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes());
+    sb[arr + 8] = 228;
+    sb[arr + 9..arr + 17].copy_from_slice(&0u64.to_le_bytes());
+    let mut ci = vec![0u8; 48 + 32];
+    ci[0..8].copy_from_slice(&CHUNK_LEN.to_le_bytes());
+    ci[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // SYSTEM
+    ci[44..46].copy_from_slice(&1u16.to_le_bytes());
+    ci[46..48].copy_from_slice(&1u16.to_le_bytes());
+    ci[48..56].copy_from_slice(&1u64.to_le_bytes());
+    ci[56..64].copy_from_slice(&0u64.to_le_bytes());
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes());
+    // btrfs_root_backup[0].fs_root -> OLD_FS_LOGICAL.
+    let b0 = BACKUP_ROOTS_OFFSET + BACKUP_FS_ROOT_OFF;
+    sb[b0..b0 + 8].copy_from_slice(&old_fs_root.to_le_bytes());
+    sb
+}
+
+/// A ROOT_TREE leaf holding a FS_TREE (objectid 5) ROOT_ITEM whose bytenr@176 =
+/// `fs_leaf_logical`.
+fn build_root_tree_leaf(fs_leaf_logical: u64) -> Vec<u8> {
+    let mut root_item = vec![0u8; 239];
+    root_item[176..184].copy_from_slice(&fs_leaf_logical.to_le_bytes());
+    root_item[168..176].copy_from_slice(&256u64.to_le_bytes()); // root_dirid
+    build_leaf(
+        1, /* ROOT_TREE */
+        8,
+        &[(5, 132 /* ROOT_ITEM */, 0, root_item)],
+    )
+}
+
+#[test]
+fn recover_deleted_whole_image_via_backup_root() {
+    // Current FS_TREE (gen 8): root dir 256 + keep.txt (258). secret.txt is GONE.
+    let current = build_leaf(
+        FS_TREE_OBJECTID,
+        8,
+        &[
+            (256, DIR_ITEM_KEY, 10, dir_item(258, b"keep.txt")),
+            (258, INODE_ITEM_KEY, 0, inode_item(4)),
+            (258, EXTENT_DATA_KEY, 0, inline_extent(b"keep")),
+        ],
+    );
+    // Old FS_TREE (gen 7, retained in backup[0]): still has secret.txt (257).
+    let secret = b"the pre-delete secret content";
+    let old = build_leaf(
+        FS_TREE_OBJECTID,
+        7,
+        &[
+            (256, DIR_ITEM_KEY, 10, dir_item(257, b"secret.txt")),
+            (256, DIR_ITEM_KEY, 20, dir_item(258, b"keep.txt")),
+            (257, INODE_ITEM_KEY, 0, inode_item(secret.len() as u64)),
+            (257, EXTENT_DATA_KEY, 0, inline_extent(secret)),
+            (258, INODE_ITEM_KEY, 0, inode_item(4)),
+            (258, EXTENT_DATA_KEY, 0, inline_extent(b"keep")),
+        ],
+    );
+
+    let mut img = vec![0u8; CHUNK_LEN as usize];
+    img[0..NODESIZE].copy_from_slice(&build_chunk_leaf());
+    img[SUPER_OFFSET..SUPER_OFFSET + SUPER_SIZE]
+        .copy_from_slice(&build_super_with_backup(OLD_FS_LOGICAL));
+    img[ROOT_LOGICAL as usize..ROOT_LOGICAL as usize + NODESIZE]
+        .copy_from_slice(&build_root_tree_leaf(CUR_FS_LOGICAL));
+    img[CUR_FS_LOGICAL as usize..CUR_FS_LOGICAL as usize + NODESIZE].copy_from_slice(&current);
+    img[OLD_FS_LOGICAL as usize..OLD_FS_LOGICAL as usize + NODESIZE].copy_from_slice(&old);
+
+    let recovered = btrfs_forensic::recover_deleted(&img);
+    let hit = recovered
+        .iter()
+        .find(|r| r.inode == 257)
+        .expect("secret.txt (257) recovered from the backup FS_TREE via the whole-image path");
+    assert_eq!(hit.path, "secret.txt");
+    assert_eq!(hit.generation, 7, "recovered from the old generation");
+    assert_eq!(hit.content, secret);
+    // keep.txt (present in both) is not reported as deleted.
+    assert!(recovered.iter().all(|r| r.inode != 258));
+}
+
 /// A minimal, self-contained SHA-256 for the independent re-hash assertion (the
 /// recorded `DELETED_SECRET_SHA256` from the mint is the real oracle; this only
 /// confirms our own re-hash agrees, so a vendored impl is acceptable here).
