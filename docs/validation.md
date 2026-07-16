@@ -51,7 +51,7 @@ root partition (GPT partition 4, `p.lxroot`) extracted to a standalone image
 (`fedora-btrfs.raw`, md5 `2e91a6d3b627ecf759779a1d2f54066d`, 4 212 112 896 bytes).
 The image and its raw partition are **gitignored** — large and freely
 re-downloadable; provenance and the verbatim extraction commands live in
-[`tests/data/README.md`](../tests/data/README.md).
+[`tests/data/README.md`](https://github.com/SecurityRonin/btrfs-forensic/blob/main/tests/data/README.md).
 
 **Oracle (independent of our reader).**
 
@@ -98,7 +98,7 @@ decode correctly, so no reader change was required. This is a
 Minted on a controlled Linux VM (Parallels `Ubuntu 24.04`, `mkfs.btrfs`
 btrfs-progs v6.6.3) and cross-checked at mint time against
 `btrfs inspect-internal dump-super -f` / `dump-tree`. Provenance and the verbatim
-mint commands are in [`tests/data/README.md`](../tests/data/README.md). The 512
+mint commands are in [`tests/data/README.md`](https://github.com/SecurityRonin/btrfs-forensic/blob/main/tests/data/README.md). The 512
 MiB `btrfs.img` is gitignored; the small extracted fixtures are committed:
 
 - `btrfs_superblock.bin` (4096 B) — the P0 always-on superblock test: magic,
