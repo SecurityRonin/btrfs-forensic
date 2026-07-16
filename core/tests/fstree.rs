@@ -504,3 +504,69 @@ fn fs_tree_root_errors_loud_when_root_tree_has_no_fs_tree_item() {
         "missing FS_TREE ROOT_ITEM is a loud, named failure, got {err:?}"
     );
 }
+
+#[test]
+fn fs_tree_root_locates_the_fs_tree_root_item_over_a_crafted_image() {
+    // The success arm of fs_tree_root: a crafted image whose ROOT_TREE leaf holds a
+    // FS_TREE (objectid 5) ROOT_ITEM. fs_tree_root must decode its bytenr / level /
+    // root_dirid / generation from the item (the happy path the oracle exercises
+    // only under BTRFS_ORACLE_IMG). The sys_chunk_array identity-maps the root
+    // logical to the physical offset holding this crafted ROOT_TREE leaf.
+    let root_logical = 4096u64;
+    let sys_len = 65_536u64;
+
+    // btrfs_root_item field offsets within the item data.
+    const ROOT_GENERATION: usize = 160;
+    const ROOT_DIRID: usize = 168;
+    const ROOT_BYTENR: usize = 176;
+    const ROOT_LEVEL: usize = 238;
+    let fs_tree_bytenr = 30_654_464u64;
+
+    let mut root_item = vec![0u8; 239];
+    root_item[ROOT_GENERATION..ROOT_GENERATION + 8].copy_from_slice(&9u64.to_le_bytes());
+    root_item[ROOT_DIRID..ROOT_DIRID + 8].copy_from_slice(&256u64.to_le_bytes());
+    root_item[ROOT_BYTENR..ROOT_BYTENR + 8].copy_from_slice(&fs_tree_bytenr.to_le_bytes());
+    root_item[ROOT_LEVEL] = 0;
+    // Root-tree leaf with the FS_TREE (objectid 5) ROOT_ITEM.
+    let leaf = build_fs_leaf(1 /* ROOT_TREE */, &[(5, ROOT_ITEM_KEY, 0, root_item)]);
+
+    // Superblock: magic, root=root_logical, nodesize, and a sys_chunk_array
+    // identity-mapping [root_logical, +sys_len) to physical root_logical.
+    let mut sb = vec![0u8; BTRFS_SUPER_INFO_SIZE];
+    sb[0x40..0x48].copy_from_slice(b"_BHRfS_M");
+    sb[0x30..0x38].copy_from_slice(&65536u64.to_le_bytes()); // bytenr
+    sb[0x50..0x58].copy_from_slice(&root_logical.to_le_bytes()); // root
+    sb[0x58..0x60].copy_from_slice(&root_logical.to_le_bytes()); // chunk_root (unused)
+    sb[0x90..0x94].copy_from_slice(&4096u32.to_le_bytes()); // sectorsize
+    sb[0x94..0x98].copy_from_slice(&(NODESIZE as u32).to_le_bytes()); // nodesize
+    let arr = 0x32busize;
+    sb[arr..arr + 8].copy_from_slice(&256u64.to_le_bytes()); // FIRST_CHUNK_TREE
+    sb[arr + 8] = 228; // CHUNK_ITEM
+    sb[arr + 9..arr + 17].copy_from_slice(&root_logical.to_le_bytes());
+    let ci = {
+        let mut d = vec![0u8; 48 + 32];
+        d[0..8].copy_from_slice(&sys_len.to_le_bytes()); // length
+        d[24..32].copy_from_slice(&0x2u64.to_le_bytes()); // SYSTEM
+        d[44..46].copy_from_slice(&1u16.to_le_bytes()); // num_stripes
+        d[46..48].copy_from_slice(&1u16.to_le_bytes()); // sub_stripes
+        d[48..56].copy_from_slice(&1u64.to_le_bytes()); // stripe devid
+        d[56..64].copy_from_slice(&root_logical.to_le_bytes()); // stripe offset (identity)
+        d
+    };
+    sb[arr + 17..arr + 17 + ci.len()].copy_from_slice(&ci);
+    sb[0xa0..0xa4].copy_from_slice(&((17 + ci.len()) as u32).to_le_bytes()); // sys_array_size
+
+    // Image: superblock @0x10000, root-tree leaf @physical root_logical.
+    let sb_off = 65_536usize;
+    let mut img = vec![0u8; sb_off + BTRFS_SUPER_INFO_SIZE];
+    img[sb_off..sb_off + BTRFS_SUPER_INFO_SIZE].copy_from_slice(&sb);
+    img[root_logical as usize..root_logical as usize + NODESIZE].copy_from_slice(&leaf);
+
+    let sb = Superblock::parse(&img[sb_off..sb_off + BTRFS_SUPER_INFO_SIZE]).unwrap();
+    let map = ChunkMap::new(); // read_node falls back to sys_chunks bootstrap
+    let root = fs_tree_root(&img, &sb, &map).expect("locate FS_TREE ROOT_ITEM");
+    assert_eq!(root.bytenr, fs_tree_bytenr, "FS_TREE root node logical");
+    assert_eq!(root.level, 0, "FS_TREE root level");
+    assert_eq!(root.root_dirid, 256, "root_dirid");
+    assert_eq!(root.generation, 9, "generation");
+}

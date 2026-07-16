@@ -632,6 +632,181 @@ fn compressed_regular_extent_reads_and_decompresses() {
     );
 }
 
+// ---- Whole-image read_file / read_by_path_content over a walkable image ----
+//
+// `read_file` and `read_by_path_content` are the whole-image entry points: they
+// locate the FS_TREE leaf themselves by walking the ROOT_TREE from the
+// superblock's `root`, so an always-on test needs a crafted image where
+//   superblock.root  -> a ROOT_TREE leaf holding a FS_TREE (objectid 5)
+//                       ROOT_ITEM whose bytenr -> the FS_TREE leaf
+// with the sys_chunk_array identity-mapping every logical == physical. The
+// self-mint exercises these via BTRFS_ORACLE_IMG; this drives the same code with
+// a small crafted image (byte layout is the verified P2/P3 layout).
+
+const ROOT_ITEM_KEY: u8 = 132;
+const ROOT_ITEM_BYTENR_OFF: usize = 176; // btrfs_root_item.bytenr (fstree root_off::BYTENR)
+const ROOT_LOGICAL: u64 = 0x20_000; // ROOT_TREE leaf @ 128 KiB
+const FS_LEAF_LOGICAL: u64 = 0x30_000; // FS_TREE leaf @ 192 KiB
+
+/// A ROOT_TREE leaf (owner ROOT_TREE=1) holding one FS_TREE (objectid 5)
+/// ROOT_ITEM whose `bytenr` field points at `fs_leaf_logical`.
+fn build_root_tree_leaf(fs_leaf_logical: u64) -> Vec<u8> {
+    let mut root_item = vec![0u8; 239]; // >= LEVEL offset (238)
+    root_item[ROOT_ITEM_BYTENR_OFF..ROOT_ITEM_BYTENR_OFF + 8]
+        .copy_from_slice(&fs_leaf_logical.to_le_bytes());
+    build_owned_leaf(1 /* ROOT_TREE */, &[(5, ROOT_ITEM_KEY, 0, root_item)])
+}
+
+/// Like [`build_fs_leaf`] but with an explicit owner (FS_TREE leaves are owner 5,
+/// ROOT_TREE leaves owner 1) and a self-consistent `bytenr` unused by these
+/// whole-image tests (the sys_chunk map, not the header bytenr, drives reads).
+fn build_owned_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
+    let mut node = vec![0u8; NODESIZE];
+    node[0x30..0x38].copy_from_slice(&30_654_464u64.to_le_bytes()); // bytenr
+    node[0x58..0x60].copy_from_slice(&owner.to_le_bytes());
+    node[0x60..0x64].copy_from_slice(&(items.len() as u32).to_le_bytes());
+    node[0x64] = 0; // leaf
+    let mut data_tail = NODESIZE;
+    for (i, (oid, ty, koff, data)) in items.iter().enumerate() {
+        let io = HDR_END + i * ITEM_STRIDE;
+        node[io..io + 8].copy_from_slice(&oid.to_le_bytes());
+        node[io + 8] = *ty;
+        node[io + 9..io + 17].copy_from_slice(&koff.to_le_bytes());
+        data_tail -= data.len();
+        let doff = (data_tail - HDR_END) as u32;
+        node[io + 17..io + 21].copy_from_slice(&doff.to_le_bytes());
+        node[io + 21..io + 25].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        node[data_tail..data_tail + data.len()].copy_from_slice(data);
+    }
+    let c = crc32c_iscsi(&node[0x20..]);
+    node[0..4].copy_from_slice(&c.to_le_bytes());
+    node
+}
+
+/// A DIR_ITEM body naming `child` under a directory, type 1 (regular file).
+fn dir_item_reg(child: u64, name: &[u8]) -> Vec<u8> {
+    let mut d = vec![0u8; 30 + name.len()];
+    d[0..8].copy_from_slice(&child.to_le_bytes()); // location.objectid
+    d[8] = 1; // location.type = INODE_ITEM
+    d[27..29].copy_from_slice(&(name.len() as u16).to_le_bytes()); // name_len
+    d[29] = 1; // FT_REG_FILE
+    d[30..30 + name.len()].copy_from_slice(name);
+    d
+}
+
+/// A superblock whose `root` names the ROOT_TREE leaf logical and whose
+/// sys_chunk_array identity-maps `[0, chunk_len)` (so every crafted node placed at
+/// physical == logical resolves via the sys-chunk fallback in `read_node`).
+/// `chunk_root` = 0, where [`build_chunk_leaf_identity`] places the chunk leaf.
+fn build_superblock_walkable(root_logical: u64, chunk_len: u64) -> Vec<u8> {
+    let mut sb = build_superblock_identity_chunk(chunk_len);
+    sb[0x50..0x58].copy_from_slice(&root_logical.to_le_bytes()); // root = ROOT_TREE
+    sb
+}
+
+/// Assemble a walkable image: the chunk leaf at physical 0, the ROOT_TREE leaf at
+/// `ROOT_LOGICAL`, and the FS_TREE `fs_leaf` at `FS_LEAF_LOGICAL`, all inside the
+/// identity chunk. Returns `(image, Superblock, ChunkMap)`.
+fn assemble_walkable_image(fs_leaf: &[u8]) -> (Vec<u8>, Superblock, btrfs_core::ChunkMap) {
+    let chunk_len = 4u64 * 1024 * 1024; // 4 MiB identity chunk
+    let mut img = vec![0u8; chunk_len as usize];
+    img[0..NODESIZE].copy_from_slice(&build_chunk_leaf_identity(chunk_len));
+    let root_leaf = build_root_tree_leaf(FS_LEAF_LOGICAL);
+    img[ROOT_LOGICAL as usize..ROOT_LOGICAL as usize + NODESIZE].copy_from_slice(&root_leaf);
+    img[FS_LEAF_LOGICAL as usize..FS_LEAF_LOGICAL as usize + fs_leaf.len()]
+        .copy_from_slice(fs_leaf);
+    let sb_bytes = build_superblock_walkable(ROOT_LOGICAL, chunk_len);
+    let sb = Superblock::parse(&sb_bytes).unwrap();
+    let map = btrfs_core::ChunkMap::walk(&img, &sb).expect("walk crafted chunk tree");
+    (img, sb, map)
+}
+
+#[test]
+fn read_file_over_whole_image_locates_fs_tree_leaf() {
+    // read_file walks the ROOT_TREE from sb.root to the FS_TREE leaf, then reads
+    // an inline file end to end — the whole-image entry point the oracle exercises.
+    let mut inline = vec![0u8; 21 + 18];
+    inline[8..16].copy_from_slice(&18u64.to_le_bytes()); // ram_bytes
+    inline[21..39].copy_from_slice(b"whole-image inline");
+    let fs_leaf = build_fs_leaf(&[
+        (257, 1, 0, inode_item(18, 0o100_644)),
+        (257, 108, 0, inline),
+    ]);
+    let (img, sb, map) = assemble_walkable_image(&fs_leaf);
+
+    let bytes = read_file(&img, &sb, &map, 257).expect("read_file locates FS_TREE leaf");
+    assert_eq!(bytes, b"whole-image inline");
+}
+
+#[test]
+fn read_by_path_content_over_whole_image_resolves_and_reads() {
+    // read_by_path_content resolves /docs/note.txt through the FS_TREE dir tree,
+    // then reads the resolved inode's inline content — end to end over the image.
+    let mut inline = vec![0u8; 21 + 14];
+    inline[8..16].copy_from_slice(&14u64.to_le_bytes()); // ram_bytes
+    inline[21..35].copy_from_slice(b"nested by path");
+    let fs_leaf = build_fs_leaf(&[
+        // root dir 256 -> docs (dir, inode 257)
+        (256, 1, 0, inode_item(0, 0o040_755)),
+        (256, 84 /*DIR_ITEM*/, 111, dir_item_dir(257, b"docs")),
+        // docs 257 -> note.txt (file, inode 258)
+        (257, 1, 0, inode_item(0, 0o040_755)),
+        (257, 84, 222, dir_item_reg(258, b"note.txt")),
+        (258, 1, 0, inode_item(14, 0o100_644)),
+        (258, 108, 0, inline),
+    ]);
+    let (img, sb, map) = assemble_walkable_image(&fs_leaf);
+
+    let content =
+        read_by_path_content(&img, &sb, &map, "/docs/note.txt").expect("resolve + read by path");
+    assert_eq!(content, b"nested by path");
+
+    // A missing path over the whole image is a loud error, not an empty file.
+    let err = read_by_path_content(&img, &sb, &map, "/docs/missing").unwrap_err();
+    assert!(
+        matches!(err, BtrfsError::Truncated { .. }),
+        "missing path over whole image is loud, got {err:?}"
+    );
+}
+
+#[test]
+fn read_uncompressed_regular_extent_from_mapped_image() {
+    // A REGULAR (type 1), UNCOMPRESSED extent whose data lives in the image at a
+    // mapped disk_bytenr: read_regular_extent translates the logical bytenr, then
+    // slices the num_bytes window straight from the image (the uncompressed
+    // regular path the self-mint's mid.bin exercises only under BTRFS_ORACLE_IMG).
+    const DATA_LOGICAL: u64 = 0x100_000; // 1 MiB, inside the identity chunk
+    let payload = b"uncompressed regular extent bytes from the mapped image!";
+    let n = payload.len() as u64;
+
+    let mut ext = vec![0u8; 53];
+    ext[8..16].copy_from_slice(&n.to_le_bytes()); // ram_bytes
+    ext[16] = 0; // compression = none
+    ext[20] = 1; // type = regular
+    ext[21..29].copy_from_slice(&DATA_LOGICAL.to_le_bytes()); // disk_bytenr
+    ext[29..37].copy_from_slice(&n.to_le_bytes()); // disk_num_bytes
+    ext[37..45].copy_from_slice(&0u64.to_le_bytes()); // offset (intra-extent)
+    ext[45..53].copy_from_slice(&n.to_le_bytes()); // num_bytes
+    let fs_leaf = build_fs_leaf(&[(259, 1, 0, inode_item(n, 0o100_644)), (259, 108, 0, ext)]);
+    let (mut img, sb, map) = assemble_walkable_image(&fs_leaf);
+    // Place the extent's data at physical == logical DATA_LOGICAL.
+    img[DATA_LOGICAL as usize..DATA_LOGICAL as usize + payload.len()].copy_from_slice(payload);
+
+    let bytes = read_file(&img, &sb, &map, 259).expect("read uncompressed regular extent");
+    assert_eq!(bytes, payload);
+}
+
+/// A DIR_ITEM body naming a subdirectory `child`, type 2 (directory).
+fn dir_item_dir(child: u64, name: &[u8]) -> Vec<u8> {
+    let mut d = vec![0u8; 30 + name.len()];
+    d[0..8].copy_from_slice(&child.to_le_bytes());
+    d[8] = 1; // location.type = INODE_ITEM
+    d[27..29].copy_from_slice(&(name.len() as u16).to_le_bytes());
+    d[29] = 2; // FT_DIR
+    d[30..30 + name.len()].copy_from_slice(name);
+    d
+}
+
 /// A chunk-tree leaf (owner CHUNK_TREE, level 0) holding one CHUNK_ITEM that
 /// identity-maps `[0, chunk_len)` to physical `[0, chunk_len)` on device 1, with
 /// a fixed crc so `Node::parse` accepts it. `ChunkMap::walk` adds this chunk to
