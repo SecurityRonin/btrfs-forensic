@@ -7,9 +7,9 @@
 //! translated to a typed [`VfsError`], never an `unwrap`/panic.
 //!
 //! ## Mapping notes / known limits
-//! - **`FsKind::Other`.** The published forensic-vfs `FsKind` enum has no `Btrfs`
-//!   variant yet, so btrfs reports `Other`. Adding a `Btrfs` variant is the
-//!   proper seam (a forensic-vfs release), not worked around here.
+//! - **`FsKind::BTRFS`.** forensic-vfs re-exports forensicnomicon's `FsKind`
+//!   newtype, which carries a first-class `BTRFS` const, so btrfs identifies as
+//!   `FsKind::BTRFS` (the earlier `Other` placeholder is retired).
 //! - **Whole-image buffering.** btrfs-core's traversal API operates on an
 //!   in-memory `&[u8]`, so `open` reads the entire source into memory once. A
 //!   streaming path is future work in btrfs-core.
@@ -157,7 +157,7 @@ fn map_btrfs_err(e: crate::BtrfsError) -> VfsError {
 
 impl FileSystem for BtrfsFs {
     fn kind(&self) -> FsKind {
-        FsKind::Other
+        FsKind::BTRFS
     }
 
     fn root(&self) -> FileId {
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn open_and_root_metadata_over_crafted_image() {
         let fs = open_crafted();
-        assert_eq!(fs.kind(), FsKind::Other);
+        assert_eq!(fs.kind(), FsKind::BTRFS);
         assert_eq!(fs.root(), FileId::Opaque(256));
         let ss = fs.sector_sizes();
         assert_eq!(ss.logical, 512);

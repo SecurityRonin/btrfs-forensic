@@ -26,7 +26,7 @@ readme = "README.md"
 # members write `dep.workspace = true`. The inter-crate `btrfs-core` version
 # lives here too, so a bump touches one line instead of every member.
 [workspace.dependencies]
-btrfs-core = { path = "core", version = "0.1.0" }
+btrfs-core = { path = "core", version = "0.1.1" }
 forensicnomicon = "1"
 thiserror = "2"
 # CRC32c (Castagnoli / iSCSI polynomial) — btrfs default checksum.

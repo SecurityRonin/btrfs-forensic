@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "btrfs-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc",
  "flate2",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "btrfs-forensic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "btrfs-core",
  "forensicnomicon",
@@ -70,10 +70,12 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e1fd9ca5012d956da1cd418e2c40732f3e7d18638cd8705551e04fc7cc67030"
+checksum = "3cba259572a35ca7a2a71c2f2c7a225c9edcd57ddfbcc00b9ebaefebe4573891"
 dependencies = [
+ "forensicnomicon-core",
+ "state-history-forensic",
  "thiserror",
 ]
 
@@ -89,9 +91,9 @@ dependencies = [
 
 [[package]]
 name = "forensicnomicon-core"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b81fa3bf717c97e0b7a877f30e6bf4abaf9dca751d970dab9292d03ae757d152"
+checksum = "b4ae8f9096cf3b0fb8414b1e419e7a8697902892082a9180cbd009d6afe87caa"
 
 [[package]]
 name = "forensicnomicon-data"
@@ -150,6 +152,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "state-history-forensic"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06d95f05c0dd49a5dfae0eb6cb6fae7bb3bd5c1f787300c94a3a5adecb44d98f"
 
 [[package]]
 name = "syn"

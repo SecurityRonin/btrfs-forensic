@@ -41,7 +41,7 @@ fn btrfs_fs_matches_dumptree_oracle() {
         return;
     };
 
-    assert_eq!(fs.kind(), FsKind::Other);
+    assert_eq!(fs.kind(), FsKind::BTRFS);
     // Root is the FS-tree root directory objectid (256).
     assert_eq!(fs.root(), FileId::Opaque(256));
 
