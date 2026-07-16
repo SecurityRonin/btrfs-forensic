@@ -1,0 +1,76 @@
+[package]
+name = "btrfs-forensic-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone workspace: the fuzz crate must not be pulled into the parent
+# (core/forensic) workspace, whose virtual root manifest is not a package.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The fuzzed structures (superblock, B-tree node, chunk map, fs-tree items,
+# file extents, crc) are the reader's — they live in btrfs-core.
+[dependencies.btrfs-core]
+path = "../core"
+
+# The full inspect/audit + carve pipeline lives in btrfs-forensic.
+[dependencies.btrfs-forensic]
+path = "../forensic"
+
+[[bin]]
+name = "superblock"
+path = "fuzz_targets/superblock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node"
+path = "fuzz_targets/node.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk"
+path = "fuzz_targets/chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fstree"
+path = "fuzz_targets/fstree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extent"
+path = "fuzz_targets/extent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crc"
+path = "fuzz_targets/crc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_forensic"
+path = "fuzz_targets/fuzz_forensic.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
