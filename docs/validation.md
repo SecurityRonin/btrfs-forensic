@@ -87,6 +87,13 @@ asserts:
 3. `read_node` reads the root tree (owner ROOT_TREE, crc verifies) and the chunk
    root (owner CHUNK_TREE, crc verifies) by logical address.
 
+**Run command** (after preparing `fedora-btrfs.raw` per `tests/data/README.md`):
+
+```bash
+BTRFS_FEDORA_ORACLE=/abs/path/to/fedora-btrfs.raw \
+  cargo test -p btrfs-core --test tier1_fedora
+```
+
 **Result.** All assertions pass: `btrfs-core` reads the real third-party Fedora
 image correctly on the first pass. The larger METADATA chunk, the multi-DATA-chunk
 layout, and the `COMPRESS_ZSTD` flag — none of which the self-mint produced —
@@ -113,3 +120,59 @@ They remain valuable as fast, deterministic CI regression scaffolding, but their
 correctness is defined by fixtures we authored, so they never stand alone as the
 sole proof for a value-producing path — the Fedora Tier-1 image is the independent
 oracle above them.
+
+## Tier-2 — deletion oracle (self-minted, for F-CARVE)
+
+The `btrfs-forensic` **F-CARVE** deleted-file recovery needs an image with an
+actual deletion, which the Fedora Tier-1 image does not have. A **self-minted**
+`del.img` (256 MiB) supplies it: `mkfs.btrfs` on a controlled Linux VM, a known
+file written + committed (gen 7) then `rm`'d + synced (gen 8), leaving the
+pre-delete `FS_TREE` root in a backup slot. This is **Tier-2, not Tier-1** — real
+`mkfs.btrfs`/kernel output independently decoded by `btrfs inspect-internal`, but
+*we chose the deletion scenario*, so a re-mint reproduces a Tier-2 fixture and can
+never reconstitute a Tier-1 validation.
+
+- **Env var:** `BTRFS_DEL_ORACLE` (absolute path to the 256 MiB `del.img`; the
+  image is gitignored, provenance-only). The small extracted leaf fixtures
+  (`btrfs_del_old_fs_tree_leaf.bin` / `btrfs_del_current_fs_tree_leaf.bin`) are
+  committed and drive the always-on F-CARVE gate with no env var.
+- **Verbatim mint command + md5s + ground truth:** `tests/data/README.md`
+  ("Deletion oracle" section) — `del.img` md5 `a324b52d8e73df339f584859c6491ed4`;
+  pre-delete gate sha256
+  `4fce0707f6dbddc3e37931fd76044862979ddca3d80b97e338197f8995e8d312`.
+- **Run command** (whole-image F-CARVE path):
+  ```bash
+  BTRFS_DEL_ORACLE=/abs/path/to/del.img \
+    cargo test -p btrfs-forensic --test f_carve full_image_recovers_deleted_file
+  ```
+  The same image also drives the `btrfs-core` VFS-adapter cross-check (needs the
+  `vfs` feature):
+  ```bash
+  BTRFS_DEL_ORACLE=/abs/path/to/del.img \
+    cargo test -p btrfs-core --features vfs --test vfs_oracle
+  ```
+
+## Reproduce Tier-1 from a clean clone
+
+btrfs has **no downloadable answer-key corpus** (no `libfsbtrfs`, no dfvfs btrfs
+image, no NIST CFReDS btrfs), so the single Tier-1 path is the real Fedora image
+decoded against an independent decoder oracle. From a fresh clone:
+
+1. **Download + verify the Fedora image** (Fedora Project archive, freely
+   redistributable):
+   ```bash
+   curl -L -o /tmp/fedora.qcow2 \
+     https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2
+   sha256sum /tmp/fedora.qcow2   # == 6205ae0c524b4d1816dbd3573ce29b5c44ed26c9fbc874fbe48c41c89dd0bac2
+   ```
+2. **Convert + extract the btrfs root partition** (verbatim commands in
+   `tests/data/README.md`) to `fedora-btrfs.raw` (md5
+   `2e91a6d3b627ecf759779a1d2f54066d`).
+3. **Set the env var + run:**
+   ```bash
+   BTRFS_FEDORA_ORACLE=/tmp/fedora-btrfs.raw \
+     cargo test -p btrfs-core --test tier1_fedora
+   ```
+
+The Tier-2 deletion oracle above is *not* Tier-1 and is not part of this block —
+it is self-minted (mint command in `tests/data/README.md`), not downloaded.
