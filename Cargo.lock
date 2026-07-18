@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "btrfs-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "crc",
  "flate2",
@@ -70,9 +70,9 @@ dependencies = [
 
 [[package]]
 name = "forensic-vfs"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cba259572a35ca7a2a71c2f2c7a225c9edcd57ddfbcc00b9ebaefebe4573891"
+checksum = "e2455cdc0cf2a8630122b43c023a5751e848a7d653c5e98069b019ae4c2b6853"
 dependencies = [
  "forensicnomicon-core",
  "state-history-forensic",
