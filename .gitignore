@@ -1,4 +1,4 @@
-/target
+target/
 
 # Cargo.lock IS committed: CI must resolve the exact batteries-included graph
 # (the always-compiled zlib/LZO/zstd decoders) rather than a fresh resolution
