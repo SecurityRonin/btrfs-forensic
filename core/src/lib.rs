@@ -12,12 +12,12 @@
 //! its logical address.
 //!
 //! Phase 2 adds **root-tree navigation and FS-tree semantics**: [`fs_tree_root`]
-//! locates the FS_TREE's `ROOT_ITEM` in the root tree, and [`read_inode`],
+//! locates the `FS_TREE`'s `ROOT_ITEM` in the root tree, and [`read_inode`],
 //! [`list_dir`], and [`read_by_path`] decode `btrfs_inode_item` metadata (size,
 //! mode, the four timestamps), directory entries (`DIR_ITEM`/`DIR_INDEX`), and
-//! resolve a slash-separated path from the FS_TREE root directory.
+//! resolve a slash-separated path from the `FS_TREE` root directory.
 //!
-//! Phase 3 adds **EXTENT_DATA → file content**: [`read_file`] /
+//! Phase 3 adds **`EXTENT_DATA` → file content**: [`read_file`] /
 //! [`read_by_path_content`] assemble a file's bytes from its
 //! `btrfs_file_extent_item`s (inline, regular, prealloc, hole zero-fill),
 //! truncated to the inode's size, decompressing zlib / LZO / zstd extents via

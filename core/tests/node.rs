@@ -9,7 +9,7 @@
 //! - **Always-on (Tier-1 fixture):** the committed `btrfs_chunk_root.bin` is the
 //!   raw 16384-byte chunk-tree leaf (the node at logical/physical 22036480).
 //!   Parse it → header (level/nritems/owner), leaf items, and the three
-//!   CHUNK_ITEMs' geometry all equal dump-tree; the node crc32c verifies.
+//!   `CHUNK_ITEMs`' geometry all equal dump-tree; the node crc32c verifies.
 //! - **Env-gated (Tier-1 full image):** with `BTRFS_ORACLE_IMG`, build the
 //!   `ChunkMap` by walking the chunk tree from the superblock and confirm it
 //!   maps the oracle's known logical addresses to the physical offsets
@@ -376,7 +376,7 @@ fn build_leaf(bytenr: u64, owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec
     node
 }
 
-/// Encode a `btrfs_chunk` item body: length/owner/stripe_len/type + stripe(s).
+/// Encode a `btrfs_chunk` item body: `length/owner/stripe_len/type` + stripe(s).
 fn chunk_item(length: u64, chunk_type: u64, stripes: &[(u64, u64)]) -> Vec<u8> {
     let mut d = vec![0u8; 48 + stripes.len() * 32];
     d[0..8].copy_from_slice(&length.to_le_bytes());

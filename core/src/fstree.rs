@@ -1,9 +1,9 @@
 //! P2 root-tree navigation + FS-tree inode / directory / path resolution.
 //!
-//! The superblock's `root` logical address names the **ROOT_TREE**, which holds
+//! The superblock's `root` logical address names the **`ROOT_TREE`**, which holds
 //! a `ROOT_ITEM` (key type [`ROOT_ITEM_KEY`]) per tree; the one keyed by
-//! objectid [`FS_TREE_OBJECTID`] (5) carries the FS_TREE's own root `bytenr`
-//! (logical) and `level`. The FS_TREE then holds, per inode, an `INODE_ITEM`
+//! objectid [`FS_TREE_OBJECTID`] (5) carries the `FS_TREE`'s own root `bytenr`
+//! (logical) and `level`. The `FS_TREE` then holds, per inode, an `INODE_ITEM`
 //! ([`INODE_ITEM_KEY`], the metadata), `INODE_REF`s ([`INODE_REF_KEY`],
 //! name↔parent links), and `DIR_ITEM`/`DIR_INDEX` entries ([`DIR_ITEM_KEY`] /
 //! [`DIR_INDEX_KEY`], directory children).
@@ -16,10 +16,10 @@
 //!
 //! # Scope
 //!
-//! P2 navigates within the FS_TREE **leaf** the oracle presents (a single
+//! P2 navigates within the `FS_TREE` **leaf** the oracle presents (a single
 //! `nodesize` node). The public `read_inode` / `list_dir` / `read_by_path`
 //! entry points take a parsed [`Node`] so they work on the committed fixture and
-//! on any FS_TREE leaf read via `read_node`. Multi-leaf FS trees (interior
+//! on any `FS_TREE` leaf read via `read_node`. Multi-leaf FS trees (interior
 //! descent within the FS tree) arrive with a later phase; here every inode /
 //! directory of the oracle lives in one leaf, matching dump-tree.
 //!
@@ -39,7 +39,7 @@ use crate::superblock::Superblock;
 /// `BTRFS_FS_TREE_OBJECTID` — the default subvolume / FS tree objectid (5).
 pub const FS_TREE_OBJECTID: u64 = 5;
 
-/// `BTRFS_FIRST_FREE_OBJECTID` — the FS_TREE's root directory inode (256); the
+/// `BTRFS_FIRST_FREE_OBJECTID` — the `FS_TREE`'s root directory inode (256); the
 /// first normal (non-reserved) objectid, where path resolution begins.
 pub const FS_TREE_ROOT_DIR_OBJECTID: u64 = 256;
 
@@ -66,7 +66,7 @@ pub const INODE_ITEM_SIZE: usize = 160;
 pub const TIMESTAMP_SIZE: usize = 12;
 
 /// The `btrfs_inode_item.size` (logical file size) field offset — exposed so the
-/// EXTENT_DATA reader can truncate assembled content to the inode's size without
+/// `EXTENT_DATA` reader can truncate assembled content to the inode's size without
 /// re-decoding the whole inode.
 pub(crate) const INODE_SIZE_OFFSET: usize = 16;
 
@@ -131,7 +131,7 @@ impl Timestamp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Inode {
-    /// The inode's own objectid (the FS_TREE key objectid it was found under).
+    /// The inode's own objectid (the `FS_TREE` key objectid it was found under).
     pub objectid: u64,
     /// `generation` — the transaction id that created the inode.
     pub generation: u64,
@@ -252,14 +252,14 @@ pub struct DirEntry {
     pub item_type: DirItemType,
 }
 
-/// The FS_TREE root as located in the root tree: where the FS tree's own root
+/// The `FS_TREE` root as located in the root tree: where the FS tree's own root
 /// node lives and how deep it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FsTreeRoot {
-    /// `bytenr` — the FS_TREE root node's **logical** address.
+    /// `bytenr` — the `FS_TREE` root node's **logical** address.
     pub bytenr: u64,
-    /// `level` — the FS_TREE root node's B-tree level (0 = a single leaf).
+    /// `level` — the `FS_TREE` root node's B-tree level (0 = a single leaf).
     pub level: u8,
     /// `root_dirid` — the FS tree's root directory objectid (256).
     pub root_dirid: u64,
@@ -267,20 +267,20 @@ pub struct FsTreeRoot {
     pub generation: u64,
 }
 
-/// Locate the FS_TREE ([`FS_TREE_OBJECTID`]) `ROOT_ITEM` by walking the root
+/// Locate the `FS_TREE` ([`FS_TREE_OBJECTID`]) `ROOT_ITEM` by walking the root
 /// tree from the superblock's `root` logical address, returning where the FS
 /// tree's own root node lives.
 ///
 /// Reads the root-tree node via [`read_node`]; if it is a leaf, scans its
-/// `ROOT_ITEM`s for the FS_TREE entry. (The oracle's root tree is a single
-/// leaf; interior root-tree descent is a later phase — an FS_TREE ROOT_ITEM in
+/// `ROOT_ITEM`s for the `FS_TREE` entry. (The oracle's root tree is a single
+/// leaf; interior root-tree descent is a later phase — an `FS_TREE` `ROOT_ITEM` in
 /// an interior root tree would require following key-pointers, out of P2 scope.)
 ///
 /// # Errors
 ///
 /// - Any error from [`read_node`] translating/reading `sb.root`.
 /// - [`BtrfsError::Truncated`] naming `FS_TREE ROOT_ITEM` when the root-tree
-///   leaf carries no FS_TREE `ROOT_ITEM` (a loud miss, never a silent `None`).
+///   leaf carries no `FS_TREE` `ROOT_ITEM` (a loud miss, never a silent `None`).
 pub fn fs_tree_root(
     image: &[u8],
     sb: &Superblock,
@@ -304,7 +304,7 @@ pub fn fs_tree_root(
     })
 }
 
-/// Read the `INODE_ITEM` for `objectid` from an FS_TREE `leaf`, or `None` if the
+/// Read the `INODE_ITEM` for `objectid` from an `FS_TREE` `leaf`, or `None` if the
 /// leaf holds no inode item for it.
 #[must_use]
 pub fn read_inode(leaf: &Node, objectid: u64) -> Option<Inode> {
@@ -313,7 +313,7 @@ pub fn read_inode(leaf: &Node, objectid: u64) -> Option<Inode> {
         .map(|(_, data)| Inode::parse(objectid, data))
 }
 
-/// List a directory's entries from an FS_TREE `leaf`: every `DIR_ITEM` /
+/// List a directory's entries from an `FS_TREE` `leaf`: every `DIR_ITEM` /
 /// `DIR_INDEX` keyed by `dir_objectid`, deduplicated by name (both a `DIR_ITEM`
 /// and a `DIR_INDEX` name each child; the listing surfaces each name once).
 ///
@@ -371,8 +371,8 @@ fn parse_dir_item(data: &[u8]) -> Option<DirEntry> {
     })
 }
 
-/// Resolve a slash-separated `path` to `(objectid, Inode)` within an FS_TREE
-/// `leaf`, starting from the FS_TREE root directory ([`FS_TREE_ROOT_DIR_OBJECTID`]).
+/// Resolve a slash-separated `path` to `(objectid, Inode)` within an `FS_TREE`
+/// `leaf`, starting from the `FS_TREE` root directory ([`FS_TREE_ROOT_DIR_OBJECTID`]).
 ///
 /// A leading slash is optional and redundant / trailing separators are ignored.
 /// The empty path (`""` or `"/"`) resolves to the root directory itself.

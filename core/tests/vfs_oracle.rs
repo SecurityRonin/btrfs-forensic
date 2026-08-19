@@ -1,9 +1,9 @@
 //! Env-gated Tier-2 VFS-adapter test over the real mkfs.btrfs "deletion oracle"
-//! image (256 MiB).
+//! image (256 `MiB`).
 //!
 //! This is the integration-test home of the former in-crate `btrfs_fs_matches_
 //! dumptree_oracle` test. It lives here (not in `core/src/vfs.rs`) so that its
-//! body — reachable only when the 256 MiB oracle is present — is not counted by
+//! body — reachable only when the 256 `MiB` oracle is present — is not counted by
 //! the CI line-coverage gate, exactly like every other env-gated fixture test in
 //! `core/tests/`. The always-on unit tests in `core/src/vfs.rs` cover the
 //! `BtrfsFs` adapter itself over crafted images.

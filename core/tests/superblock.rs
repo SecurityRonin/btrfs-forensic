@@ -7,7 +7,7 @@
 //!   `btrfs inspect-internal dump-super -f` ground truth captured in
 //!   `tests/data/README.md`.
 //! - **Env-gated (Tier-1 full image):** when `BTRFS_ORACLE_IMG` points at the
-//!   512 MiB oracle image, read its superblock at offset 65536 and assert the
+//!   512 `MiB` oracle image, read its superblock at offset 65536 and assert the
 //!   same values — proving the offset within a whole image.
 //! - **Unit (robustness):** bad-magic fails loud with the offending bytes; a
 //!   truncated buffer returns `Truncated`, never panics.

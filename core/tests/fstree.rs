@@ -8,13 +8,13 @@
 //!
 //! Tiers:
 //! - **Always-on (Tier-1 fixture):** the committed `btrfs_fs_tree_leaf.bin` is
-//!   the raw 16384-byte FS_TREE leaf (the node at logical 30654464). Parsing it
+//!   the raw 16384-byte `FS_TREE` leaf (the node at logical 30654464). Parsing it
 //!   into inodes / directory entries / a path resolver reproduces dump-tree +
 //!   `stat` exactly.
 //! - **Env-gated (Tier-1 full image):** with `BTRFS_ORACLE_IMG`, walk the root
-//!   tree from the superblock, locate the FS_TREE ROOT_ITEM, and confirm its
-//!   `bytenr` equals the FS_TREE leaf's logical address dump-tree reports.
-//! - **Robustness:** a lying `name_len` in an INODE_REF / DIR_ITEM never panics
+//!   tree from the superblock, locate the `FS_TREE` `ROOT_ITEM`, and confirm its
+//!   `bytenr` equals the `FS_TREE` leaf's logical address dump-tree reports.
+//! - **Robustness:** a lying `name_len` in an `INODE_REF` / `DIR_ITEM` never panics
 //!   or over-reads.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -27,11 +27,11 @@ use btrfs_core::{
     FS_TREE_ROOT_DIR_OBJECTID, INODE_ITEM_KEY, INODE_REF_KEY, ROOT_ITEM_KEY,
 };
 
-/// The FS_TREE leaf's own logical address. dump-tree: `leaf 30654464 items 25
+/// The `FS_TREE` leaf's own logical address. dump-tree: `leaf 30654464 items 25
 /// ... owner FS_TREE`.
 const FS_TREE_LEAF_LOGICAL: u64 = 30_654_464;
 
-/// The committed always-on fixture: the raw 16384-byte FS_TREE leaf node.
+/// The committed always-on fixture: the raw 16384-byte `FS_TREE` leaf node.
 fn fs_tree_leaf() -> Vec<u8> {
     let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     d.pop(); // core/ -> repo root
@@ -348,7 +348,7 @@ const HDR_END: usize = 101;
 const ITEM_STRIDE: usize = 25;
 
 /// Build an FS_TREE-style leaf: a `btrfs_header` (owner 5, level 0) + item
-/// headers (key + data_offset/size) with data laid out backward from the node
+/// headers (key + `data_offset/size`) with data laid out backward from the node
 /// end, and a fixed-up crc32c so `Node::parse` reports `crc_valid == Some(true)`.
 fn build_fs_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
     let mut node = vec![0u8; NODESIZE];
@@ -372,8 +372,8 @@ fn build_fs_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
     node
 }
 
-/// Encode a `btrfs_dir_item` body: location key[17] + transid(8) + data_len(2) +
-/// name_len(2) + type(1) + name.
+/// Encode a `btrfs_dir_item` body: location key[17] + transid(8) + `data_len(2)` +
+/// `name_len(2)` + type(1) + name.
 fn dir_item(child: u64, dir_type: u8, name: &[u8]) -> Vec<u8> {
     let mut d = vec![0u8; 30 + name.len()];
     d[0..8].copy_from_slice(&child.to_le_bytes()); // location.objectid

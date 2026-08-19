@@ -83,7 +83,7 @@ fn fill(src: &dyn ImageSource, mut off: u64, mut buf: &mut [u8]) -> VfsResult<()
 }
 
 /// A btrfs directory-item type mapped to the unified node kind.
-fn dirent_kind(t: &DirItemType) -> NodeKind {
+fn dirent_kind(t: DirItemType) -> NodeKind {
     match t {
         DirItemType::File => NodeKind::File,
         DirItemType::Dir => NodeKind::Dir,
@@ -92,14 +92,23 @@ fn dirent_kind(t: &DirItemType) -> NodeKind {
     }
 }
 
+/// POSIX `st_mode` file-type bits. Named rather than written inline: these are
+/// the standard `S_IF*` values, and a digit-grouped `0o170_000` would obscure
+/// the octal structure the constants are defined in.
+const S_IFMT: u32 = 0o170_000;
+const S_IFREG: u32 = 0o100_000;
+const S_IFDIR: u32 = 0o040_000;
+const S_IFLNK: u32 = 0o120_000;
+const S_IFCHR: u32 = 0o020_000;
+const S_IFBLK: u32 = 0o060_000;
+
 /// An inode's `mode` file-type bits mapped to the unified node kind.
 fn inode_kind(inode: &Inode) -> NodeKind {
-    // S_IFMT mask (0o170000) selects the type bits of the POSIX mode.
-    match inode.mode & 0o170000 {
-        0o100000 => NodeKind::File,
-        0o040000 => NodeKind::Dir,
-        0o120000 => NodeKind::Symlink,
-        0o020000 | 0o060000 => NodeKind::Device,
+    match inode.mode & S_IFMT {
+        S_IFREG => NodeKind::File,
+        S_IFDIR => NodeKind::Dir,
+        S_IFLNK => NodeKind::Symlink,
+        S_IFCHR | S_IFBLK => NodeKind::Device,
         _ => NodeKind::Other,
     }
 }
@@ -146,6 +155,9 @@ impl BtrfsFs {
 }
 
 /// Translate a btrfs-core error into the VFS error type.
+// Used as `map_err(map_btrfs_err)`, which hands the error over by value; taking
+// `&` here would not compile at any of the six call sites.
+#[allow(clippy::needless_pass_by_value)]
 fn map_btrfs_err(e: crate::BtrfsError) -> VfsError {
     VfsError::Decode {
         layer: "btrfs",
@@ -184,7 +196,7 @@ impl FileSystem for BtrfsFs {
                 Ok(VfsDirEntry {
                     name: e.name.into_bytes(),
                     id: FileId::Opaque(e.child),
-                    kind: dirent_kind(&e.item_type),
+                    kind: dirent_kind(e.item_type),
                 })
             })
             .collect();
@@ -363,7 +375,7 @@ mod tests {
         node
     }
 
-    /// A 160-byte INODE_ITEM: size@16, nlink@40, uid@44, gid@48, mode@52, and the
+    /// A 160-byte `INODE_ITEM`: size@16, nlink@40, uid@44, gid@48, mode@52, and the
     /// four 12-byte timestamps (atime@112, ctime@124, mtime@136, otime@148).
     #[allow(clippy::too_many_arguments)]
     fn inode_item(size: u64, mode: u32, nlink: u32, uid: u32, gid: u32, otime_sec: u64) -> Vec<u8> {
@@ -380,7 +392,7 @@ mod tests {
         d
     }
 
-    /// An inline EXTENT_DATA (type 0) carrying `payload` (ram_bytes = len).
+    /// An inline `EXTENT_DATA` (type 0) carrying `payload` (`ram_bytes` = len).
     fn inline_extent(payload: &[u8]) -> Vec<u8> {
         let mut d = vec![0u8; 21 + payload.len()];
         d[8..16].copy_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -389,7 +401,7 @@ mod tests {
         d
     }
 
-    /// A DIR_ITEM body: location key[17] + transid(8) + data_len(2) + name_len(2) +
+    /// A `DIR_ITEM` body: location key[17] + transid(8) + `data_len(2)` + `name_len(2)` +
     /// type(1) + name. `ft` is the btrfs FT_* type byte.
     fn dir_item(child: u64, ft: u8, name: &[u8]) -> Vec<u8> {
         let mut d = vec![0u8; 30 + name.len()];
@@ -401,7 +413,7 @@ mod tests {
         d
     }
 
-    /// A CHUNK_TREE leaf (chunk_root) with one CHUNK_ITEM identity-mapping
+    /// A `CHUNK_TREE` leaf (`chunk_root`) with one `CHUNK_ITEM` identity-mapping
     /// `[0, CHUNK_LEN)`, so `ChunkMap::walk` yields an identity map.
     fn build_chunk_leaf() -> Vec<u8> {
         let mut node = vec![0u8; NODESIZE];
@@ -429,7 +441,7 @@ mod tests {
         node
     }
 
-    /// A superblock whose `root` = ROOT_LOGICAL, `chunk_root` = 0, and whose
+    /// A superblock whose `root` = `ROOT_LOGICAL`, `chunk_root` = 0, and whose
     /// sys_chunk_array identity-maps `[0, CHUNK_LEN)`.
     fn build_super() -> Vec<u8> {
         let mut sb = vec![0u8; SUPER_SIZE];
@@ -456,8 +468,8 @@ mod tests {
     }
 
     /// Assemble a walkable in-memory btrfs image: chunk leaf @0, superblock
-    /// @0x10000, ROOT_TREE leaf @ROOT_LOGICAL, FS_TREE leaf @FS_LEAF_LOGICAL. The
-    /// FS_TREE root dir (256) holds `note.txt` (257, a file with an inline extent),
+    /// @0x10000, `ROOT_TREE` leaf @`ROOT_LOGICAL`, `FS_TREE` leaf @`FS_LEAF_LOGICAL`. The
+    /// `FS_TREE` root dir (256) holds `note.txt` (257, a file with an inline extent),
     /// `link` (258, a symlink whose target is its inline content), and `sub` (259,
     /// a directory). Returns the image bytes.
     fn walkable_image() -> Vec<u8> {
