@@ -2,7 +2,7 @@
 //! the **Fedora Cloud Base 41** root partition.
 //!
 //! btrfs has **no ground-truth forensic corpus** — no `libfsbtrfs` in libyal, no
-//! dfvfs btrfs test image, no NIST CFReDS btrfs answer key, and TSK's btrfs
+//! dfvfs btrfs test image, no NIST `CFReDS` btrfs answer key, and TSK's btrfs
 //! support was reverted as experimental. The strongest genuine Tier-1 available
 //! is therefore a **real distribution image + an independent decoder oracle**,
 //! not an answer-key corpus. The filesystem here was authored by the Fedora
@@ -11,14 +11,14 @@
 //! a wholly separate implementation from this reader). See `docs/validation.md`
 //! and `tests/data/README.md` for provenance.
 //!
-//! **Env-gated.** The ~4 GiB btrfs partition is gitignored and downloaded /
+//! **Env-gated.** The ~4 `GiB` btrfs partition is gitignored and downloaded /
 //! extracted on demand; this test skips cleanly when `BTRFS_FEDORA_ORACLE` is
 //! unset, so CI without the corpus stays green (like the `BTRFS_ORACLE_IMG`
 //! full-image tests in `superblock.rs` / `node.rs`).
 //!
 //! If `btrfs-core` FAILS on this real image, that is a genuine real-world-quirk
-//! finding (Fedora's geometry — a 256 MiB METADATA chunk, multiple DATA chunks,
-//! COMPRESS_ZSTD in `incompat_flags` — that our single self-mint never
+//! finding (Fedora's geometry — a 256 `MiB` METADATA chunk, multiple DATA chunks,
+//! `COMPRESS_ZSTD` in `incompat_flags` — that our single self-mint never
 //! exercised). If it PASSES, it is strong Tier-1 validation that the reader
 //! decodes a filesystem neither the image nor its answer key came from us.
 

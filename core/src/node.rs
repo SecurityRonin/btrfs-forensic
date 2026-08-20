@@ -80,7 +80,7 @@ pub struct Header {
     /// (the CoW/staleness lever: an older generation marks a stale block).
     pub generation: u64,
     /// `owner` (offset 0x58) — the objectid of the tree this block belongs to
-    /// (1 = ROOT_TREE, 3 = CHUNK_TREE, …).
+    /// (1 = `ROOT_TREE`, 3 = `CHUNK_TREE`, …).
     pub owner: u64,
     /// `nritems` (offset 0x60) — the number of items (leaf) or key-pointers
     /// (interior) that follow the header.
@@ -159,7 +159,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// Decode a `btrfs_chunk` from `data` (a CHUNK_ITEM's item data). Bounds- and
+    /// Decode a `btrfs_chunk` from `data` (a `CHUNK_ITEM`'s item data). Bounds- and
     /// count-checked: an absurd `num_stripes` is capped by the bytes available,
     /// so a malformed item truncates rather than over-reads.
     #[must_use]
@@ -309,9 +309,9 @@ impl Node {
         }
     }
 
-    /// Decode every CHUNK_ITEM in a leaf into `(logical_start, Chunk)` pairs
+    /// Decode every `CHUNK_ITEM` in a leaf into `(logical_start, Chunk)` pairs
     /// (the logical start is the item key's `offset`). Non-CHUNK items (e.g.
-    /// DEV_ITEM) are skipped. An interior node yields nothing.
+    /// `DEV_ITEM`) are skipped. An interior node yields nothing.
     #[must_use]
     pub fn chunk_items(&self) -> Vec<(u64, Chunk)> {
         self.leaf_items()
@@ -368,7 +368,7 @@ struct MapEntry {
     stripes: Vec<(u64, u64)>,
 }
 
-/// The chunk-tree logical→physical map: the union of every CHUNK_ITEM's span
+/// The chunk-tree logical→physical map: the union of every `CHUNK_ITEM`'s span
 /// and its physical placement. Covers single-device profiles (SINGLE/DUP);
 /// for DUP the first stripe (first mirror) is returned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -385,7 +385,7 @@ impl ChunkMap {
         }
     }
 
-    /// Add every CHUNK_ITEM found in a chunk-tree leaf `node` to the map.
+    /// Add every `CHUNK_ITEM` found in a chunk-tree leaf `node` to the map.
     pub fn add_from_node(&mut self, node: &Node) {
         for (logical, chunk) in node.chunk_items() {
             self.entries.push(MapEntry {
@@ -416,7 +416,7 @@ impl ChunkMap {
     /// Build the full chunk map by bootstrapping from the superblock's
     /// `sys_chunk_array` and walking the chunk tree from `sb.chunk_root`.
     ///
-    /// The `sys_chunk_array` covers the chunk_root's own logical range (that is
+    /// The `sys_chunk_array` covers the `chunk_root`'s own logical range (that is
     /// its whole purpose), so `chunk_root` is reachable; each subsequently read
     /// node's `blockptr`s are translated through the map built *so far* (the
     /// chunk tree is self-describing). On the oracle the chunk tree is a single
@@ -502,7 +502,7 @@ impl ChunkMap {
 
 /// Read the btrfs node at logical address `logical`: translate it to a physical
 /// offset via `chunk_map` (falling back to the superblock `sys_chunk_array`
-/// bootstrap for addresses inside the chunk_root's own range), slice `nodesize`
+/// bootstrap for addresses inside the `chunk_root`'s own range), slice `nodesize`
 /// bytes, and parse the header + items/pointers.
 ///
 /// # Errors

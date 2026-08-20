@@ -1,8 +1,8 @@
-//! P3 EXTENT_DATA → file content: assemble a file's bytes from its
+//! P3 `EXTENT_DATA` → file content: assemble a file's bytes from its
 //! `btrfs_file_extent_item`s (inline, regular, prealloc, hole), decompressing
 //! zlib / LZO / zstd extents.
 //!
-//! The FS_TREE keys a file's data as `EXTENT_DATA` ([`EXTENT_DATA_KEY`] = 108)
+//! The `FS_TREE` keys a file's data as `EXTENT_DATA` ([`EXTENT_DATA_KEY`] = 108)
 //! items, one per file-logical region, ordered by the key's `offset` (the
 //! file-logical byte where the region starts). Each item is a
 //! `btrfs_file_extent_item`:
@@ -20,7 +20,7 @@
 //!
 //! Offsets verified byte-for-byte against `btrfs inspect-internal dump-tree`
 //! on the minted oracle (small.txt/leaf.txt inline, mid.bin regular; see
-//! `tests/data/README.md`, "P2 ground truth" — the same FS_TREE leaf).
+//! `tests/data/README.md`, "P2 ground truth" — the same `FS_TREE` leaf).
 //!
 //! # Compression (batteries-included)
 //!
@@ -101,12 +101,12 @@ impl Compression {
     }
 }
 
-/// The floor for the logical-content allocation bound (64 MiB), used when the
+/// The floor for the logical-content allocation bound (64 `MiB`), used when the
 /// image is empty (always-on synthetic leaves) so a small hole/size still
 /// allocates while a `u64`-scale lying length is still rejected.
 const LOGICAL_ALLOC_FLOOR: u64 = 64 * 1024 * 1024;
 
-/// Assemble the file content for objectid `ino` from an already-parsed FS_TREE
+/// Assemble the file content for objectid `ino` from an already-parsed `FS_TREE`
 /// `leaf`, reading regular extents from `image` via `map`.
 ///
 /// The inode's `size` (from its `INODE_ITEM`) truncates the assembled bytes;
@@ -473,13 +473,13 @@ fn guard_alloc(field: &'static str, claimed: u64, bound: u64) -> Result<(), Btrf
 }
 
 /// Assemble the file content for objectid `ino` over the whole `image`: locate
-/// the FS_TREE root from the root tree, read its leaf, and delegate to
+/// the `FS_TREE` root from the root tree, read its leaf, and delegate to
 /// [`read_file_from_leaf`].
 ///
 /// # Errors
 ///
 /// - Any error from [`crate::fs_tree_root`] / [`read_node`] locating and
-///   reading the FS_TREE leaf, or from [`read_file_from_leaf`].
+///   reading the `FS_TREE` leaf, or from [`read_file_from_leaf`].
 pub fn read_file(
     image: &[u8],
     sb: &Superblock,
@@ -490,14 +490,14 @@ pub fn read_file(
     read_file_from_leaf(&leaf, image, map, sb.sectorsize, ino)
 }
 
-/// Resolve `path` from the FS_TREE root directory and read the resolved inode's
+/// Resolve `path` from the `FS_TREE` root directory and read the resolved inode's
 /// content over the whole `image`.
 ///
 /// # Errors
 ///
 /// - [`BtrfsError::Truncated`] naming the path if it does not resolve (a loud
 ///   miss, never an empty file).
-/// - Any error from locating/reading the FS_TREE leaf or assembling content.
+/// - Any error from locating/reading the `FS_TREE` leaf or assembling content.
 pub fn read_by_path_content(
     image: &[u8],
     sb: &Superblock,
@@ -513,7 +513,7 @@ pub fn read_by_path_content(
     read_file_from_leaf(&leaf, image, map, sb.sectorsize, ino)
 }
 
-/// Locate and read the FS_TREE leaf node for the whole image.
+/// Locate and read the `FS_TREE` leaf node for the whole image.
 fn fs_tree_leaf(image: &[u8], sb: &Superblock, map: &ChunkMap) -> Result<Node, BtrfsError> {
     let root = crate::fstree::fs_tree_root(image, sb, map)?;
     read_node(image, sb, map, root.bytenr)

@@ -1,4 +1,4 @@
-//! P3 EXTENT_DATA → file-content tests.
+//! P3 `EXTENT_DATA` → file-content tests.
 //!
 //! Ground truth is two independent oracles (Doer-Checker):
 //!
@@ -6,7 +6,7 @@
 //!   different implementation than this reader): `read_file` of each known
 //!   oracle file must reproduce the mounted file's sha256 exactly. small.txt
 //!   and leaf.txt are *inline* extents living in the committed always-on
-//!   FS_TREE leaf; mid.bin is a *regular* extent whose data lives in the DATA
+//!   `FS_TREE` leaf; mid.bin is a *regular* extent whose data lives in the DATA
 //!   chunk of the full image, so its test is env-gated on `BTRFS_ORACLE_IMG`.
 //! - **Real compressor output** for the compression decoders: the zlib / zstd /
 //!   btrfs-LZO blobs embedded below were produced by independent encoders
@@ -25,13 +25,13 @@
 use std::path::PathBuf;
 
 use btrfs_core::{
-    decompress_extent, read_by_path_content, read_file, read_file_from_leaf, BtrfsError,
+    decompress_extent, read_by_path_content, read_file, read_file_from_leaf, BtrfsError, ChunkMap,
     Compression, Node, Superblock, BTRFS_SUPER_INFO_OFFSET, BTRFS_SUPER_INFO_SIZE,
 };
 
 const SECTORSIZE: u32 = 4096;
 
-/// The committed always-on fixture: the raw 16384-byte FS_TREE leaf node.
+/// The committed always-on fixture: the raw 16384-byte `FS_TREE` leaf node.
 fn fs_tree_leaf() -> Vec<u8> {
     let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     d.pop(); // core/ -> repo root
@@ -57,7 +57,7 @@ fn read_inline_file_small_txt_matches_mount_sha256() {
     // ino 257 small.txt: EXTENT_DATA type 0 (inline), ram_bytes 26, compression
     // none. The 26 inline bytes follow the 21-byte extent header in the leaf.
     let node = Node::parse(&fs_tree_leaf()).unwrap();
-    let bytes = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 257)
+    let bytes = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 257)
         .expect("read inline small.txt");
     assert_eq!(bytes.len(), 26, "small.txt logical size");
     assert_eq!(bytes, b"hello inline btrfs oracle\n");
@@ -72,7 +72,7 @@ fn read_inline_file_small_txt_matches_mount_sha256() {
 fn read_inline_nested_leaf_txt_matches_mount_sha256() {
     // ino 261 dir/sub/leaf.txt: inline, ram_bytes 20.
     let node = Node::parse(&fs_tree_leaf()).unwrap();
-    let bytes = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 261)
+    let bytes = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 261)
         .expect("read inline leaf.txt");
     assert_eq!(bytes.len(), 20);
     assert_eq!(bytes, b"nested leaf content\n");
@@ -84,7 +84,7 @@ fn read_file_of_absent_inode_is_a_loud_error() {
     // An objectid with no INODE_ITEM/EXTENT_DATA in the leaf: a loud, named
     // error, never an empty Vec masquerading as an empty file.
     let node = Node::parse(&fs_tree_leaf()).unwrap();
-    let err = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 9_999).unwrap_err();
+    let err = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 9_999).unwrap_err();
     assert!(
         matches!(err, BtrfsError::Truncated { .. }),
         "absent inode is a loud error, got {err:?}"
@@ -213,7 +213,7 @@ const NODESIZE: usize = 16384;
 const HDR_END: usize = 101;
 const ITEM_STRIDE: usize = 25;
 
-/// Build an FS_TREE leaf with the given items and a fixed-up crc32c so
+/// Build an `FS_TREE` leaf with the given items and a fixed-up crc32c so
 /// `Node::parse` reports `crc_valid == Some(true)`.
 fn build_fs_leaf(items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
     let mut node = vec![0u8; NODESIZE];
@@ -253,7 +253,7 @@ fn crc32c_iscsi(buf: &[u8]) -> u32 {
     crc ^ 0xFFFF_FFFF
 }
 
-/// An INODE_ITEM body of the given size (byte 16 = size u64).
+/// An `INODE_ITEM` body of the given size (byte 16 = size u64).
 fn inode_item(size: u64, mode: u32) -> Vec<u8> {
     let mut d = vec![0u8; 160];
     d[16..24].copy_from_slice(&size.to_le_bytes());
@@ -261,8 +261,8 @@ fn inode_item(size: u64, mode: u32) -> Vec<u8> {
     d
 }
 
-/// A regular EXTENT_DATA item: 21-byte header (type 1, compression `comp`) then
-/// disk_bytenr, disk_num_bytes, offset, num_bytes.
+/// A regular `EXTENT_DATA` item: 21-byte header (type 1, compression `comp`) then
+/// `disk_bytenr`, `disk_num_bytes`, offset, `num_bytes`.
 fn extent_reg(
     comp: u8,
     disk_bytenr: u64,
@@ -296,7 +296,7 @@ fn hole_extent_zero_fills_to_num_bytes() {
     ]);
     let node = Node::parse(&leaf).unwrap();
     // Empty image: a hole needs no image bytes.
-    let out = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 300)
+    let out = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 300)
         .expect("hole zero-fills");
     assert_eq!(out.len(), 8192, "hole spans num_bytes");
     assert!(out.iter().all(|&b| b == 0), "hole is all zeros");
@@ -312,7 +312,7 @@ fn size_truncates_a_tail_hole() {
         (301, 108, 4096, extent_reg(0, 0, 0, 0, 4096)),
     ]);
     let node = Node::parse(&leaf).unwrap();
-    let out = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 301)
+    let out = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 301)
         .expect("truncated to size");
     assert_eq!(out.len(), 5000, "assembled content truncated to inode size");
 }
@@ -327,8 +327,8 @@ fn lying_num_bytes_is_rejected_not_ooming() {
         (302, 108, 0, extent_reg(0, 0, 0, 0, huge)),
     ]);
     let node = Node::parse(&leaf).unwrap();
-    let err =
-        read_file_from_leaf(&node, &[0u8; 4096], &Default::default(), SECTORSIZE, 302).unwrap_err();
+    let err = read_file_from_leaf(&node, &[0u8; 4096], &ChunkMap::default(), SECTORSIZE, 302)
+        .unwrap_err();
     assert!(
         matches!(err, BtrfsError::AllocationBomb { .. }),
         "absurd num_bytes rejected, got {err:?}"
@@ -472,7 +472,7 @@ fn unknown_extent_type_is_a_loud_error() {
     ext[20] = 99; // type
     let leaf = build_fs_leaf(&[(310, 1, 0, inode_item(10, 0o100_644)), (310, 108, 0, ext)]);
     let node = Node::parse(&leaf).unwrap();
-    let err = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 310).unwrap_err();
+    let err = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 310).unwrap_err();
     match err {
         BtrfsError::Truncated {
             structure, need, ..
@@ -497,8 +497,8 @@ fn regular_extent_with_no_chunk_mapping_is_a_loud_error() {
         (312, 108, 0, extent_reg(0, 0xdead_beef, 64, 0, 64)),
     ]);
     let node = Node::parse(&leaf).unwrap();
-    let err =
-        read_file_from_leaf(&node, &[0u8; 4096], &Default::default(), SECTORSIZE, 312).unwrap_err();
+    let err = read_file_from_leaf(&node, &[0u8; 4096], &ChunkMap::default(), SECTORSIZE, 312)
+        .unwrap_err();
     match err {
         BtrfsError::Truncated {
             structure, need, ..
@@ -555,7 +555,7 @@ fn sparse_tail_zero_fills_to_inode_size() {
         (311, 108, 0, inline),
     ]);
     let node = Node::parse(&leaf).unwrap();
-    let out = read_file_from_leaf(&node, &[], &Default::default(), SECTORSIZE, 311).unwrap();
+    let out = read_file_from_leaf(&node, &[], &ChunkMap::default(), SECTORSIZE, 311).unwrap();
     assert_eq!(out.len(), 100, "content extends to inode size");
     assert_eq!(&out[..20], b"twenty-byte-inline!!");
     assert!(out[20..].iter().all(|&b| b == 0), "sparse tail is zeros");
@@ -648,8 +648,8 @@ const ROOT_ITEM_BYTENR_OFF: usize = 176; // btrfs_root_item.bytenr (fstree root_
 const ROOT_LOGICAL: u64 = 0x20_000; // ROOT_TREE leaf @ 128 KiB
 const FS_LEAF_LOGICAL: u64 = 0x30_000; // FS_TREE leaf @ 192 KiB
 
-/// A ROOT_TREE leaf (owner ROOT_TREE=1) holding one FS_TREE (objectid 5)
-/// ROOT_ITEM whose `bytenr` field points at `fs_leaf_logical`.
+/// A `ROOT_TREE` leaf (owner `ROOT_TREE=1`) holding one `FS_TREE` (objectid 5)
+/// `ROOT_ITEM` whose `bytenr` field points at `fs_leaf_logical`.
 fn build_root_tree_leaf(fs_leaf_logical: u64) -> Vec<u8> {
     let mut root_item = vec![0u8; 239]; // >= LEVEL offset (238)
     root_item[ROOT_ITEM_BYTENR_OFF..ROOT_ITEM_BYTENR_OFF + 8]
@@ -657,9 +657,9 @@ fn build_root_tree_leaf(fs_leaf_logical: u64) -> Vec<u8> {
     build_owned_leaf(1 /* ROOT_TREE */, &[(5, ROOT_ITEM_KEY, 0, root_item)])
 }
 
-/// Like [`build_fs_leaf`] but with an explicit owner (FS_TREE leaves are owner 5,
-/// ROOT_TREE leaves owner 1) and a self-consistent `bytenr` unused by these
-/// whole-image tests (the sys_chunk map, not the header bytenr, drives reads).
+/// Like [`build_fs_leaf`] but with an explicit owner (`FS_TREE` leaves are owner 5,
+/// `ROOT_TREE` leaves owner 1) and a self-consistent `bytenr` unused by these
+/// whole-image tests (the `sys_chunk` map, not the header bytenr, drives reads).
 fn build_owned_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
     let mut node = vec![0u8; NODESIZE];
     node[0x30..0x38].copy_from_slice(&30_654_464u64.to_le_bytes()); // bytenr
@@ -683,7 +683,7 @@ fn build_owned_leaf(owner: u64, items: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
     node
 }
 
-/// A DIR_ITEM body naming `child` under a directory, type 1 (regular file).
+/// A `DIR_ITEM` body naming `child` under a directory, type 1 (regular file).
 fn dir_item_reg(child: u64, name: &[u8]) -> Vec<u8> {
     let mut d = vec![0u8; 30 + name.len()];
     d[0..8].copy_from_slice(&child.to_le_bytes()); // location.objectid
@@ -694,7 +694,7 @@ fn dir_item_reg(child: u64, name: &[u8]) -> Vec<u8> {
     d
 }
 
-/// A superblock whose `root` names the ROOT_TREE leaf logical and whose
+/// A superblock whose `root` names the `ROOT_TREE` leaf logical and whose
 /// sys_chunk_array identity-maps `[0, chunk_len)` (so every crafted node placed at
 /// physical == logical resolves via the sys-chunk fallback in `read_node`).
 /// `chunk_root` = 0, where [`build_chunk_leaf_identity`] places the chunk leaf.
@@ -704,8 +704,8 @@ fn build_superblock_walkable(root_logical: u64, chunk_len: u64) -> Vec<u8> {
     sb
 }
 
-/// Assemble a walkable image: the chunk leaf at physical 0, the ROOT_TREE leaf at
-/// `ROOT_LOGICAL`, and the FS_TREE `fs_leaf` at `FS_LEAF_LOGICAL`, all inside the
+/// Assemble a walkable image: the chunk leaf at physical 0, the `ROOT_TREE` leaf at
+/// `ROOT_LOGICAL`, and the `FS_TREE` `fs_leaf` at `FS_LEAF_LOGICAL`, all inside the
 /// identity chunk. Returns `(image, Superblock, ChunkMap)`.
 fn assemble_walkable_image(fs_leaf: &[u8]) -> (Vec<u8>, Superblock, btrfs_core::ChunkMap) {
     let chunk_len = 4u64 * 1024 * 1024; // 4 MiB identity chunk
@@ -796,7 +796,7 @@ fn read_uncompressed_regular_extent_from_mapped_image() {
     assert_eq!(bytes, payload);
 }
 
-/// A DIR_ITEM body naming a subdirectory `child`, type 2 (directory).
+/// A `DIR_ITEM` body naming a subdirectory `child`, type 2 (directory).
 fn dir_item_dir(child: u64, name: &[u8]) -> Vec<u8> {
     let mut d = vec![0u8; 30 + name.len()];
     d[0..8].copy_from_slice(&child.to_le_bytes());
@@ -807,7 +807,7 @@ fn dir_item_dir(child: u64, name: &[u8]) -> Vec<u8> {
     d
 }
 
-/// A chunk-tree leaf (owner CHUNK_TREE, level 0) holding one CHUNK_ITEM that
+/// A chunk-tree leaf (owner `CHUNK_TREE`, level 0) holding one `CHUNK_ITEM` that
 /// identity-maps `[0, chunk_len)` to physical `[0, chunk_len)` on device 1, with
 /// a fixed crc so `Node::parse` accepts it. `ChunkMap::walk` adds this chunk to
 /// the map so an extent's `disk_bytenr` in that range translates.
@@ -1000,9 +1000,10 @@ mod sha256 {
                 *hi = hi.wrapping_add(*vi);
             }
         }
+        use std::fmt::Write as _;
         let mut out = String::with_capacity(64);
         for word in h {
-            out.push_str(&format!("{word:08x}"));
+            let _ = write!(out, "{word:08x}");
         }
         out
     }
