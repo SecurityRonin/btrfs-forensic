@@ -49,6 +49,14 @@ pub const INODE_ITEM_KEY: u8 = 1;
 /// `BTRFS_INODE_REF_KEY` — a `btrfs_inode_ref` (name + parent-dir link).
 pub const INODE_REF_KEY: u8 = 12;
 
+/// `BTRFS_XATTR_ITEM_KEY` — an extended attribute.
+///
+/// The item body is a `btrfs_dir_item`, the very structure a directory entry
+/// uses: the same 30-byte prefix, the name, and then `data_len` bytes of value.
+/// Btrfs stores the FULL attribute name (`security.selinux`), unlike ext4 and
+/// XFS which store a bare name beside a namespace tag.
+pub const XATTR_ITEM_KEY: u8 = 24;
+
 /// `BTRFS_DIR_ITEM_KEY` — a `btrfs_dir_item` keyed by name hash.
 pub const DIR_ITEM_KEY: u8 = 84;
 
@@ -100,6 +108,9 @@ mod root_off {
 // `btrfs_dir_item` field offsets: a 17-byte location key, then `transid(u64)`,
 // `data_len(u16)@25`, `name_len(u16)@27`, `type(u8)@29`, `name[]@30`.
 mod dir_off {
+    /// `data_len` — value length, meaningful for an `XATTR_ITEM` and zero for a
+    /// plain directory entry.
+    pub const DATA_LEN: usize = 25;
     pub const NAME_LEN: usize = 27;
     pub const TYPE: usize = 29;
     pub const NAME: usize = 30;
@@ -369,6 +380,87 @@ fn parse_dir_item(data: &[u8]) -> Option<DirEntry> {
         child,
         item_type: DirItemType::from_byte(type_byte),
     })
+}
+
+/// One extended attribute: its full name and its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Xattr {
+    /// The complete attribute name as the system presents it, e.g.
+    /// `security.selinux`. Btrfs stores it whole, so nothing is reconstructed.
+    pub name: String,
+    /// The attribute's value bytes.
+    pub value: Vec<u8>,
+}
+
+/// List every extended attribute attached to `objectid` in this leaf.
+///
+/// An inode with no attributes yields an empty vector; that is not an error.
+///
+/// Only items keyed to `objectid` are returned. A leaf interleaves many inodes'
+/// items, so filtering on `key_type` alone would hand one file's attributes to
+/// another.
+///
+/// **Several attributes can share one item.** The key is a hash of the name, so
+/// a collision chains a second `btrfs_dir_item` immediately after the first —
+/// exactly as `DIR_ITEM` does. The walk below continues through the item body
+/// rather than stopping at the first record, because stopping would silently
+/// drop the colliding attribute.
+#[must_use]
+pub fn list_xattrs(leaf: &Node, objectid: u64) -> Vec<Xattr> {
+    let mut out = Vec::new();
+    for (key, data) in leaf.leaf_items() {
+        if key.objectid != objectid || key.key_type != XATTR_ITEM_KEY {
+            continue;
+        }
+        let mut off = 0usize;
+        // A malformed record ENDS this item's walk: the records are packed with
+        // no terminator, so once one length is untrustworthy there is nowhere
+        // safe to resume, and continuing would emit an attribute assembled from
+        // the wrong bytes.
+        while let Some(rest) = data.get(off..) {
+            let Some((x, consumed)) = parse_xattr_item(rest) else {
+                break;
+            };
+            out.push(x);
+            if consumed == 0 {
+                break;
+            }
+            off += consumed;
+        }
+    }
+    out
+}
+
+/// Parse one `btrfs_dir_item` as an extended attribute, returning it and the
+/// number of bytes it occupied.
+///
+/// The 30-byte prefix length is not assumed: for every item in the reference
+/// leaf `itemsize == 30 + name_len + data_len` holds exactly.
+fn parse_xattr_item(data: &[u8]) -> Option<(Xattr, usize)> {
+    if data.len() < dir_off::NAME {
+        return None;
+    }
+    let data_len = le_u16(data, dir_off::DATA_LEN) as usize;
+    let name_len = le_u16(data, dir_off::NAME_LEN) as usize;
+    // A zero-length name is not a valid attribute; treating it as one would
+    // emit a nameless entry and, with a zero data_len, never advance.
+    if name_len == 0 {
+        return None;
+    }
+    let name_end = dir_off::NAME.checked_add(name_len)?;
+    let value_end = name_end.checked_add(data_len)?;
+    // Both the name and the value must be fully present. A truncated record is
+    // refused rather than padded: a short value would be reported as the
+    // attribute's real contents.
+    let name = data.get(dir_off::NAME..name_end)?;
+    let value = data.get(name_end..value_end)?;
+    Some((
+        Xattr {
+            name: String::from_utf8_lossy(name).into_owned(),
+            value: value.to_vec(),
+        },
+        value_end,
+    ))
 }
 
 /// Resolve a slash-separated `path` to `(objectid, Inode)` within an `FS_TREE`

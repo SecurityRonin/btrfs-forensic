@@ -1,488 +1,58 @@
-# btrfs Forensic Test Data — Provenance
 
-Two evidentiary tiers (see [`docs/validation.md`](../../docs/validation.md)):
 
-- **Tier-1 (REAL-ext):** a genuine third-party btrfs filesystem — the **Fedora
-  Cloud Base 41** root partition — validated against the independent
-  `btrfs inspect-internal` decoder. Neither the image nor its answer key was
-  authored by us. Gitignored + downloaded on demand (`BTRFS_FEDORA_ORACLE`).
-  btrfs has **no ground-truth forensic corpus** (no libfsbtrfs, no dfvfs btrfs,
-  no NIST answer key), so this is "real distro image + independent decoder
-  oracle," not an answer-key corpus — but it is real, third-party geometry the
-  self-mint never produced (see the Fedora entry below).
-- **Tier-2 (REAL-self):** minted on a controlled Linux VM with `mkfs.btrfs`
-  (btrfs-progs) and cross-checked against the independent `btrfs inspect-internal`
-  oracle (a different implementation from this reader). Real `mkfs.btrfs` output,
-  independently checked — **but we chose the scenario**, so it is Tier-2, not
-  Tier-1: a fast, deterministic P0/P1 regression backstop, not the independent
-  answer key.
-
-See the fleet catalog at
-[`issen/docs/corpus-catalog.md`](../../../issen/docs/corpus-catalog.md) for the
-machine index; this README is the co-located human detail.
-
-The 512 MiB oracle image (`btrfs.img`) is **gitignored** (`.gitignore` →
-`/tests/data/*.img`). Only the extracted **4096-byte superblock fixture**
-(`btrfs_superblock.bin`, the block at physical offset 0x10000) and the oracle
-**text outputs** are committed. Re-mint the image from the verbatim commands
-below to reproduce the full corpus.
-
-## Minting host
-
-- Parallels VM `Ubuntu 24.04 (with Rosetta)`, `Linux 6.8.0-86-generic aarch64`.
-- `btrfs-progs v6.6.3` (`mkfs.btrfs` / `btrfs inspect-internal`).
-- Host `/tmp` shared read-write into the VM at `/media/psf/tmp`.
-
-## Verbatim mint + populate commands
-
-```bash
-rm -rf /tmp/btrfs && mkdir -p /tmp/btrfs && cd /tmp/btrfs
-dd if=/dev/zero of=btrfs.img bs=1M count=512 status=none
-mkfs.btrfs -f -L BTRFS_ORACLE --csum crc32c btrfs.img
-
-sudo mkdir -p /mnt/btrfs-oracle
-sudo mount -o loop btrfs.img /mnt/btrfs-oracle
-echo "hello inline btrfs oracle" | sudo tee /mnt/btrfs-oracle/small.txt >/dev/null
-sudo bash -c "yes ABCDEFGH | head -c 65536 > /mnt/btrfs-oracle/mid.bin"
-sudo mkdir -p /mnt/btrfs-oracle/dir/sub
-echo "nested leaf content" | sudo tee /mnt/btrfs-oracle/dir/sub/leaf.txt >/dev/null
-sync
-sudo find /mnt/btrfs-oracle -type f -exec sha256sum {} \; > btrfs.content.sha256   # content check (Tier-2: self-minted)
-sudo umount /mnt/btrfs-oracle
-
-# Extract the committed always-on fixture: the 4096-byte block at 0x10000.
-dd if=btrfs.img bs=1 skip=65536 count=4096 of=btrfs_superblock.bin status=none
-
-# Independent structural oracle (btrfs-progs, a different impl from our reader).
-btrfs inspect-internal dump-super -f btrfs.img          > btrfs.dump-super.txt
-btrfs filesystem show                btrfs.img          > btrfs.fs-show.txt
-btrfs inspect-internal dump-tree -b 22036480 btrfs.img  > btrfs.chunk-tree.txt   # P1 chunk tree
-btrfs inspect-internal dump-tree -b 22036480 btrfs.img  > btrfs.chunk-node.txt   # P1 node (same tree)
-
-# Extract the P1 always-on fixture: the raw 16384-byte chunk-tree LEAF node.
-# The chunk_root logical addr 22036480 maps (via the sys_chunk_array bootstrap)
-# to the identical physical offset 22036480 on this oracle, so skip= that value.
-dd if=btrfs.img bs=1 skip=22036480 count=16384 of=btrfs_chunk_root.bin status=none
-
-# --- P2 oracle: full tree dump + FS_TREE leaf fixture ---
-# The FULL tree dump (ROOT_TREE + FS_TREE + every other tree) is the P2 ground
-# truth for root-item / inode / dir-item offsets.
-btrfs inspect-internal dump-tree btrfs.img > btrfs.full-tree.txt
-
-# Extract the P2 always-on fixture: the raw 16384-byte FS_TREE LEAF node.
-# The FS_TREE root's logical addr 30654464 sits in the METADATA chunk
-# [30408704, +33554432) whose first stripe is physical 38797312, so
-# physical = 38797312 + (30654464 - 30408704) = 39043072.
-dd if=btrfs.img bs=1 skip=39043072 count=16384 of=btrfs_fs_tree_leaf.bin status=none
-
-# Independent decoder oracle (kernel driver, a different impl) — still Tier-2 on a self-minted image:
-# mount read-only and capture ls -i (name->inode) + stat (size/mode/mtime).
-sudo mount -o loop,ro btrfs.img /mnt/btrfs-oracle
-( cd /mnt/btrfs-oracle && ls -i -R . )
-for f in small.txt mid.bin dir dir/sub dir/sub/leaf.txt; do
-  stat -c "ino=%i size=%s mode=%a type=%F mtime=%Y mtime_ns=%y" "/mnt/btrfs-oracle/$f"
-done
-sudo umount /mnt/btrfs-oracle
-```
-
-## Ground truth (from `btrfs inspect-internal dump-super -f`)
-
-The committed `btrfs.dump-super.txt` is the verbatim capture. Key P0 field
-values the always-on test asserts:
-
-| field | value |
-|---|---|
-| `magic` | `_BHRfS_M` (bytes `5f 42 48 52 66 53 5f 4d` at superblock offset 0x40) |
-| `csum_type` | `0 (crc32c)` |
-| `csum` | `0xd9136f60` `[match]` (stored LE bytes `d9 13 6f 60`) |
-| `bytenr` | `65536` |
-| `fsid` | `fe9599cb-e209-4d5c-b734-642c457fbc01` |
-| `label` | `BTRFS_ORACLE` |
-| `generation` | `9` |
-| `root` (logical) | `30720000` |
-| `chunk_root` (logical) | `22036480` |
-| `log_root` | `0` |
-| `root_level` / `chunk_root_level` / `log_root_level` | `0 / 0 / 0` |
-| `total_bytes` | `536870912` |
-| `bytes_used` | `212992` |
-| `root_dir_objectid` | `6` |
-| `num_devices` | `1` |
-| `sectorsize` | `4096` |
-| `nodesize` | `16384` |
-| `stripesize` | `4096` |
-| `sys_array_size` | `129` |
-| `chunk_root_generation` | `6` |
-| `compat_ro_flags` | `0x3` (FREE_SPACE_TREE \| FREE_SPACE_TREE_VALID) |
-| `incompat_flags` | `0x361` (MIXED_BACKREF \| BIG_METADATA \| EXTENDED_IREF \| SKINNY_METADATA \| NO_HOLES) |
-
-`sys_chunk_array` (exactly **one** entry, consuming all 129 bytes):
-
-```
-item 0 key (FIRST_CHUNK_TREE=256  CHUNK_ITEM=228  logical 22020096)
-    length 8388608  owner 2  stripe_len 65536  type SYSTEM|DUP (0x22)
-    num_stripes 2  sub_stripes 1
-        stripe 0  devid 1  offset 22020096
-        stripe 1  devid 1  offset 30408704
-```
-
-Bootstrap logical→physical (single-device DUP, first mirror):
-`physical = stripe[0].offset + (logical - key.offset)`, so `chunk_root`
-logical `22036480` → physical `22036480` (this chunk is placed at an identity
-offset on the oracle; the test also checks an out-of-span address maps to
-`None`).
-
-## P1 ground truth (from `btrfs inspect-internal dump-tree -b 22036480`)
-
-The chunk tree is a single **leaf** at bytenr 22036480 (level 0), 4 items,
-generation 6, owner `CHUNK_TREE` (3). Values the P1 always-on test asserts (all
-verified byte-for-byte against the raw fixture AND dump-tree — the on-disk
-`btrfs_header`/`btrfs_item`/`btrfs_key_ptr`/`btrfs_chunk`/`btrfs_stripe` offsets
-in the task brief were confirmed correct, no shift):
-
-| header field | offset | value |
-|---|---|---|
-| `csum` (crc32c, LE) | `0x00` | `0x88f84902` `[match]` (bytes `02 49 f8 88`) |
-| `fsid` | `0x20` | `fe9599cb-…` (= superblock fsid) |
-| `bytenr` (own logical) | `0x30` | `22036480` |
-| `flags` | `0x38` | `0x100000000000001` (WRITTEN + backref-rev-1 bit) |
-| `chunk_tree_uuid` | `0x40` | `05ec8046-…` |
-| `generation` | `0x50` | `6` |
-| `owner` (tree id) | `0x58` | `3` (CHUNK_TREE) |
-| `nritems` | `0x60` | `4` |
-| `level` | `0x64` | `0` (leaf) → **header size = 0x65 = 101 bytes** |
-
-Leaf items start at `header_end` (101); each `btrfs_item` = `disk_key[17] +
-data_offset(u32) + data_size(u32)` = 25 bytes; item **data** lives at
-`header_end + data_offset` (dump-tree's `itemoff`):
-
-| item | key (oid, type, offset) | data_offset | data_size | decoded |
-|---|---|---|---|---|
-| 0 | (1 DEV_ITEM=216 1) | 16185 | 98 | DEV_ITEM (skipped by chunk walk) |
-| 1 | (256 CHUNK_ITEM=228 13631488) | 16105 | 80 | DATA\|single, 1 stripe @13631488 |
-| 2 | (256 228 22020096) | 15993 | 112 | SYSTEM\|DUP (0x22), stripes @22020096,@30408704 |
-| 3 | (256 228 30408704) | 15881 | 112 | METADATA\|DUP (0x24), len 33554432, stripes @38797312,@72351744 |
-
-`btrfs_chunk` (data of a CHUNK_ITEM) = `length,owner,stripe_len,type` (4×u64) +
-`io_align,io_width,sector_size` (3×u32) + `num_stripes,sub_stripes` (2×u16) = 48
-bytes, then `num_stripes × btrfs_stripe {devid(u64), offset(u64=physical),
-dev_uuid[16]}` = 32 bytes each. **Node crc32c covers `[0x20 .. nodesize=16384]`**
-(the whole block, unlike the superblock which covers `sectorsize`); computed
-`0x88f84902` reproduces the stored digest → `crc_valid == Some(true)`.
-
-Chunk-map logical→physical the P1 test asserts (single-device DUP/single, first
-stripe): `chunk_root` logical `22036480` → physical `22036480` (identity), `root`
-logical `30720000` → physical `39108608` (METADATA chunk: `38797312 + (30720000 −
-30408704)`), DATA chunk start `13631488` → `13631488`.
-
-## P2 ground truth (root tree + FS tree, from full `dump-tree` + mount-ro `stat`)
-
-The root tree is a single **leaf** at logical `30720000` (physical `39108608`),
-11 items, owner `ROOT_TREE` (1). Its `ROOT_ITEM` (key type **132**) for the
-FS_TREE (objectid **5**) points at the FS tree root:
-
-```
-item 3 key (FS_TREE ROOT_ITEM 0)
-    generation 8 root_dirid 256 bytenr 30654464 ... level 0
-```
-
-`btrfs_root_item` offsets (the leading 160 bytes are an embedded
-`btrfs_inode_item`): `generation@160, root_dirid@168, bytenr@176, level@238`.
-`bytenr 30654464` = the FS_TREE leaf's own logical address; `level 0` = a single
-leaf.
-
-The FS_TREE is a single **leaf** at logical `30654464` → physical `39043072`
-(`38797312 + (30654464 − 30408704)`), 25 items, generation 8, owner `FS_TREE`
-(5). Its item-type bytes (verified against dump-tree keys): `INODE_ITEM=1,
-INODE_REF=12, DIR_ITEM=84, DIR_INDEX=96, EXTENT_DATA=108`.
-
-**Struct offsets verified byte-for-byte vs dump-tree + mount-ro `stat`:**
-
-- `btrfs_inode_item` (160 bytes): `generation@0, transid@8, size@16, nbytes@24,
-  nlink(u32)@40, uid@44, gid@48, mode(u32)@52, flags(u64)@64`, then four
-  `btrfs_timespec {sec(u64), nsec(u32)}` (12 bytes each): `atime@112, ctime@124,
-  mtime@136, otime@148`.
-- `btrfs_inode_ref` (INODE_REF data): `index(u64)@0, name_len(u16)@8, name[]@10`;
-  the item **key's `offset`** is the parent-directory objectid.
-- `btrfs_dir_item` (DIR_ITEM/DIR_INDEX data): `location btrfs_disk_key[17]@0`
-  (`location.objectid` = child inode), `transid(u64)@17, data_len(u16)@25,
-  name_len(u16)@27, type(u8)@29, name[]@30`. dir-item `type`: `1=REG_FILE,
-  2=DIR, 7=SYMLINK`.
-
-Known-file ground truth (dump-tree inode items, confirmed by `ls -i` + `stat`):
-
-| inode | name (path) | parent | mode | size | mtime (sec.nsec) |
-|---|---|---|---|---|---|
-| 256 | `/` (root dir) | — | `0o40755` | 38 | 1783927276.225047007 |
-| 257 | `small.txt` | 256 | `0o100644` | 26 | 1783927276.206047007 |
-| 258 | `mid.bin` | 256 | `0o100644` | 65536 | 1783927276.216047007 |
-| 259 | `dir` | 256 | `0o40755` | 6 | 1783927276.226047007 |
-| 260 | `dir/sub` | 259 | `0o40755` | 16 | 1783927276.231047007 |
-| 261 | `dir/sub/leaf.txt` | 260 | `0o100644` | 20 | 1783927276.231047007 |
-
-Path resolution starts from the FS_TREE root directory objectid **256**
-(`BTRFS_FIRST_FREE_OBJECTID`). The P2 always-on tests assert `read_inode`,
-`list_dir(256)`, and `read_by_path("/dir/sub/leaf.txt")` against this table;
-the env-gated full-image test additionally locates the FS_TREE `ROOT_ITEM` from
-the root tree (`fs_tree_root` → `bytenr 30654464`). Every offset above matched
-the on-disk-format facts in `docs/RESEARCH.md` — no draft offset needed
-correcting for P2.
-
-## P3 ground truth (EXTENT_DATA → file content)
-
-The FS_TREE leaf's `EXTENT_DATA` (key type **108**) items were decoded and
-verified byte-for-byte against `btrfs inspect-internal dump-tree` and the
-mount-ro content sha256 (`btrfs.content.sha256`):
-
-| inode | file | EXTENT_DATA | dump-tree | content sha256 (mount oracle) |
-|---|---|---|---|---|
-| 257 | `small.txt` | type 0 inline, ram_bytes 26, comp none | `item 10 (257 EXTENT_DATA 0) itemsize 47` | `9ca0c72a…c10c` |
-| 258 | `mid.bin` | type 1 regular, disk_bytenr 13631488, num_bytes 65536, comp none | `item 13 (258 EXTENT_DATA 0) itemsize 53` | `7c2c6d9f…eaef` |
-| 261 | `dir/sub/leaf.txt` | type 0 inline, ram_bytes 20, comp none | `item 24 (261 EXTENT_DATA 0) itemsize 41` | `c7a34a53…9cad` |
-
-`btrfs_file_extent_item` offsets (verified vs dump-tree; matched the task brief
-exactly, no shift): `generation@0, ram_bytes@8, compression@16, encryption@17,
-other_encoding(u16)@18, type@20`; then **inline** data at `@21`, or **regular/
-prealloc** `disk_bytenr@21, disk_num_bytes@29, offset@37, num_bytes@45`
-(`disk_bytenr == 0` = a hole). small.txt/leaf.txt are inline (data lives in the
-committed `btrfs_fs_tree_leaf.bin`, so always-on); mid.bin is a regular extent
-whose data is in the DATA chunk (physical == logical 13631488), so its test is
-env-gated on `BTRFS_ORACLE_IMG`.
-
-### Compression decoder fixtures (generated in-test, not committed)
-
-The self-mint's small files are all uncompressed, so the zlib / zstd / btrfs-LZO
-decoders are validated against blobs produced by **independent encoders** and
-round-tripped through the `flate2` / `ruzstd` / `lzo` crates (Tier-2: an
-independent oracle authored the compressed bytes; ground truth is the plaintext
-sha256). The blobs are embedded as hex constants in `core/tests/extent.rs`;
-their generators (verbatim, reproducible):
-
-```python
-# zlib + zstd over a 4096-byte sector of repeated text (Python 3):
-import zlib, zstandard
-orig = (b"The quick brown fox jumps over the lazy dog. " * 200)[:4096]
-zlib.compress(orig, 6)                                  # -> ZLIB_HEX
-zstandard.ZstdCompressor(level=3).compress(orig)        # -> ZSTD_HEX
-# plaintext sha256: ec5472468ce7895a8ed98c8637b2ccc0686e269aae0dcdd0eab05ed2421f4125
-
-# btrfs-LZO frame: a hand-built LZO1X literal run wrapped in btrfs framing
-# (4-byte LE total incl. header, then 4-byte LE seg_len + one LZO1X literal
-# block: first byte 17+L for a run of L literals, then the bytes, then the
-# 0x11 00 00 end marker). Decoded by the `lzo` crate. Framing per the kernel
-# fs/btrfs/lzo.c: a segment header never crosses a sectorsize boundary.
-```
-
-The compressed **regular** extent path (a zstd extent whose bytes live in a data
-chunk) is covered by a crafted, `ChunkMap::walk`-able image built in-test
-(`build_chunk_leaf_identity` + `build_superblock_identity_chunk`) — the self-mint
-has no compressed regular file to exercise it.
-
-## Field-offset note (Doer-Checker)
-
-The scalar offsets in `btrfs_super_block` were **verified byte-for-byte against
-`dump-super -f`** (not coded from memory). The verified offsets are:
-`csum@0x0, fsid@0x20, bytenr@0x30, flags@0x38, magic@0x40, generation@0x48,
-root@0x50, chunk_root@0x58, log_root@0x60, total_bytes@0x70, bytes_used@0x78,
-root_dir_objectid@0x80, num_devices@0x88, sectorsize@0x90, nodesize@0x94,
-stripesize@0x9c, sys_chunk_array_size@0xa0, chunk_root_generation@0xa4,
-compat_flags@0xac, compat_ro_flags@0xb4, incompat_flags@0xbc, csum_type@0xc4,
-root_level@0xc6, chunk_root_level@0xc7, log_root_level@0xc8, label@0x12b,
-sys_chunk_array@0x32b`. (These correct the +0x18-shifted draft offsets in the
-task brief, which omitted `log_root_transid` — verifying against the oracle
-caught it.)
-
-## Tier-1 real-world corpus — Fedora Cloud Base 41 (REAL-ext, gitignored)
-
-The genuine Tier-1 artifact: a **real Fedora Cloud Base 41** disk image whose
-btrfs root filesystem was authored by the Fedora Project, not us. Consumed by
-`core/tests/tier1_fedora.rs` (env-gated on `BTRFS_FEDORA_ORACLE`; skips when
-absent). Not committed — large and freely re-downloadable.
-
-<!-- TODO: mirror this entry into issen/docs/corpus-catalog.md (the single fleet
-     machine index) — classify REAL-ext / Tier-1, gitignored. Do not duplicate;
-     that catalog cross-references this README. -->
-
-#### Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 → fedora-btrfs.raw
-
-- **Source:** Fedora Project, Fedora Linux 41 Cloud Base (Generic) image.
-- **Original download URL** (moved to the archive host once F41 was superseded):
-  <https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2>
-  (the `download.fedoraproject.org` redirector now 404s for F41 — use the archive
-  host directly).
-- **qcow2 identity:** 491 716 608 bytes, published SHA256
-  `6205ae0c524b4d1816dbd3573ce29b5c44ed26c9fbc874fbe48c41c89dd0bac2`
-  (from `Fedora-Cloud-41-1.4-x86_64-CHECKSUM`; verified after download).
-- **License / redistribution:** Fedora Cloud images are freely redistributable
-  (Fedora Project). We do **not** commit them — downloaded on demand.
-- **Extracted btrfs partition** (`fedora-btrfs.raw`, gitignored):
-  md5 `2e91a6d3b627ecf759779a1d2f54066d`, 4 212 112 896 bytes (GPT partition 4,
-  `p.lxroot`, at byte offset 1 156 579 328 of the 5 GiB raw disk).
-- **Independent oracle ground truth** (`btrfs inspect-internal`, btrfs-progs
-  v6.6.3), asserted by the test:
-
-  | field | value |
-  |---|---|
-  | `magic` | `_BHRfS_M` `[match]` |
-  | `csum_type` | `0 (crc32c)` |
-  | `fsid` | `815e66c2-6a8a-4984-a890-1a3c710bf933` |
-  | `label` | `fedora` |
-  | `generation` | `13` |
-  | `root` (logical) | `71991296` → physical `80379904` (METADATA\|DUP chunk) |
-  | `chunk_root` (logical) | `22069248` → physical `22069248` (SYSTEM\|DUP, identity) |
-  | `log_root` | `0` |
-  | `total_bytes` | `4212109312` |
-  | `sectorsize` / `nodesize` / `stripesize` | `4096` / `16384` / `4096` |
-  | `num_devices` | `1` |
-  | `incompat_flags` | `0x371` (MIXED_BACKREF \| **COMPRESS_ZSTD** \| BIG_METADATA \| EXTENDED_IREF \| SKINNY_METADATA \| NO_HOLES) |
-
-  The chunk tree is a single leaf at `22069248` (7 items): SYSTEM\|DUP,
-  METADATA\|DUP `[30408704, +268435456)` (first stripe physical `38797312`), and
-  several DATA\|single chunks. `COMPRESS_ZSTD` and the 256 MiB METADATA chunk are
-  real-world features the self-mint (`0x361`, 33 MiB METADATA) never produced.
-
-### Verbatim download + extraction commands (reproduce the Tier-1 corpus)
-
-```bash
-# 1. Download the Fedora Cloud qcow2 (archive host; verify SHA256).
-mkdir -p /tmp/btrfs_fedora && cd /tmp/btrfs_fedora
-curl -sSL -O \
-  https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2
-shasum -a 256 Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2   # 6205ae0c...0bac2
-
-# 2. Convert qcow2 -> raw (qemu-img; host or VM).
-qemu-img convert -O raw Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 fedora.raw
-
-# 3. Find the btrfs partition and extract it standalone (on the Linux VM;
-#    parted reports partition 4 = btrfs at byte 1156579328, size 4212112896).
-parted -s fedora.raw unit B print
-dd if=fedora.raw of=fedora-btrfs.raw bs=512 skip=2258944 count=8226783 status=none
-
-# 4. Confirm it is btrfs + record md5.
-btrfs inspect-internal dump-super -f fedora-btrfs.raw   # magic _BHRfS_M [match]
-md5sum fedora-btrfs.raw                                 # 2e91a6d3...066d
-
-# 5. Run the env-gated Tier-1 test.
-BTRFS_FEDORA_ORACLE=/tmp/btrfs_fedora/fedora-btrfs.raw cargo test -p btrfs-core --test tier1_fedora
-```
-
-## Deletion oracle — CoW deleted-file recovery (REAL-self / Tier-2)
-
-The `btrfs-forensic` **F-CARVE** analyzer recovers a deleted file by diffing an
-older-generation `FS_TREE` (reached through the superblock `btrfs_root_backup[4]`
-array) against the current `FS_TREE`. That needs an image where a file was
-written, committed, then deleted — the base oracle above has no deletion, so a
-**separate deletion oracle** was minted.
-
-btrfs is copy-on-write: after `rm` + `sync`, the pre-delete `FS_TREE` root stays
-referenced in a backup slot, and (for an inline extent) the deleted file's
-content is still present inside that old leaf. This is a **Tier-2** oracle — real
-`mkfs.btrfs`/kernel output, independently decoded by `btrfs inspect-internal`,
-but we chose the deletion scenario.
-
-### Minting host
-
-- Parallels VM `Ubuntu 24.04 (with Rosetta)`, `Linux 6.8.0-86-generic aarch64`.
-- `btrfs-progs v6.6.3`. Host `/tmp` shared into the VM at `/media/psf/tmp`.
-
-### Verbatim mint commands
-
-```bash
-W=/root/btrfs_del; rm -rf "$W"; mkdir -p "$W"; cd "$W"
-dd if=/dev/zero of=del.img bs=1M count=256 status=none
-mkfs.btrfs -f -L BTRFS_DELORACLE --csum crc32c del.img
-mkdir -p /mnt/btrfs-del && mount -o loop del.img /mnt/btrfs-del
-
-# Write the known file (recorded sha256) + a survivor, then sync (commits gen 7).
-printf 'SECRET btrfs deleted-file recovery oracle payload \xe2\x80\x94 CoW retains the old root.\n' \
-  > /mnt/btrfs-del/secret.txt
-printf 'this file stays.\n' > /mnt/btrfs-del/keep.txt
-sync; btrfs filesystem sync /mnt/btrfs-del
-sha256sum /mnt/btrfs-del/secret.txt    # 4fce0707...e8d312 (the PRE-DELETE gate hash)
-
-# Delete secret.txt and sync — CoW writes a new FS_TREE (gen 8); the gen-7 FS_TREE
-# root (bytenr 30507008) remains referenced in a backup slot and still holds
-# inode 257 (secret.txt) + its inline extent.
-rm -f /mnt/btrfs-del/secret.txt
-sync; btrfs filesystem sync /mnt/btrfs-del
-umount /mnt/btrfs-del
-
-# Extract the committed always-on fixtures (small metadata nodes; the 256 MiB
-# del.img itself is NOT committed — gitignored, provenance only).
-# METADATA chunk: logical [30408704,+33554432) -> first stripe physical 38797312.
-dd if=del.img bs=1 skip=65536   count=4096  of=btrfs_del_superblock.bin        status=none
-dd if=del.img bs=1 skip=38895616 count=16384 of=btrfs_del_old_fs_tree_leaf.bin     status=none  # logical 30507008 (gen 7)
-dd if=del.img bs=1 skip=39075840 count=16384 of=btrfs_del_current_fs_tree_leaf.bin status=none  # logical 30687232 (gen 8)
-btrfs inspect-internal dump-super -f          del.img > btrfs_del.dump-super.txt
-btrfs inspect-internal dump-tree -b 30507008  del.img > btrfs_del.old-fs-tree.txt
-btrfs inspect-internal dump-tree -b 30687232  del.img > btrfs_del.current-fs-tree.txt
-```
-
-### Ground truth (independent `btrfs inspect-internal` oracle)
-
-| field | value |
-|---|---|
-| deleted file | `secret.txt`, inode **257**, size **80**, **inline** extent (type 0, comp none) |
-| **pre-delete sha256** (the F-CARVE gate) | `4fce0707f6dbddc3e37931fd76044862979ddca3d80b97e338197f8995e8d312` |
-| old (pre-delete) `FS_TREE` root | logical **30507008**, gen **7**, 12 items — has inode 257 |
-| current `FS_TREE` root | logical **30687232**, gen **8**, 7 items — inode 257 GONE (`keep.txt`/258 survives) |
-| `btrfs_root_backup[4]` array offset | superblock byte **0xb2b**, 4 × 168-byte entries (verified vs `dump-super -f`) |
-
-The gen-7 `backup_fs_root` (30507008) is where the diff finds inode 257 present
-while the current tree lacks it → deleted; its inline content carves to the
-pre-delete sha256, both from the committed leaf fixtures and (env-gated
-`BTRFS_DEL_ORACLE`) the whole 256 MiB image via the backup-root path.
-
-**Honest recovery caveat.** This recovery succeeds because the current kernel
-retained the gen-7 `FS_TREE` root in a backup slot AND the deleted file was
-**inline** (its bytes live in the old leaf, so no data-chunk extent had to
-survive un-overwritten). A regular (non-inline) deleted extent recovers only
-while its data chunk is un-overwritten; a re-mint on a different kernel may not
-always retain the same backup roots. `recover_deleted` returns nothing (never a
-fabricated result) when no older `FS_TREE` root is retained.
-
-### Deletion-oracle committed files
-
-| file | md5 | oracle | anchors |
-|---|---|---|---|
-| `btrfs_del_superblock.bin` (4096 B) | `a41679c2a57b0d5faa463c5917d32409` | `dd skip=65536 count=4096` | F-CARVE whole-image entry (env-gated) |
-| `btrfs_del_old_fs_tree_leaf.bin` (16384 B) | `8f8f78a569a89a454a3790e0e8ce598d` | `dd skip=38895616 count=16384` | **F-CARVE always-on gate** (pre-delete FS_TREE leaf) |
-| `btrfs_del_current_fs_tree_leaf.bin` (16384 B) | `18386430f75512a38310ec6aec70c98c` | `dd skip=39075840 count=16384` | **F-CARVE always-on gate** (current FS_TREE leaf) |
-| `btrfs_del.dump-super.txt` | — | `dump-super -f` | backup-roots ground truth |
-| `btrfs_del.old-fs-tree.txt` / `btrfs_del.current-fs-tree.txt` | — | `dump-tree` | old/current FS_TREE ground truth |
-
-Full deletion image (gitignored, provenance only): `md5 del.img
-a324b52d8e73df339f584859c6491ed4`, 268435456 bytes. Consumed by the env-gated
-`full_image_recovers_deleted_file` / `full_image_audit_scans_real_fs_tree_for_orphans`
-tests via `BTRFS_DEL_ORACLE`.
-
-## Committed files (index)
-
-| file | oracle | anchors |
-|---|---|---|
-| `btrfs_superblock.bin` (md5 `812c99bb8ddd898a011abcd3ac5c3bbe`, 4096 B) | `dd skip=65536 count=4096` | **P0 always-on superblock test** |
-| `btrfs_chunk_root.bin` (md5 `316c875aa24188c9b252fa09f78f8147`, 16384 B) | `dd skip=22036480 count=16384` | **P1 always-on node/chunk test** (raw chunk-tree leaf) |
-| `btrfs_fs_tree_leaf.bin` (md5 `6676c7e415f95931b9a4f0d569a2eca8`, 16384 B) | `dd skip=39043072 count=16384` | **P2 always-on inode/dir/path test** (raw FS_TREE leaf) |
-| `btrfs.dump-super.txt` | `dump-super -f` | P0 superblock field ground truth |
-| `btrfs.fs-show.txt` | `btrfs filesystem show` | human geometry cross-check |
-| `btrfs.chunk-tree.txt` | `dump-tree -b 22036480` | **P1** full chunk-tree walk oracle (DATA/SYSTEM/METADATA chunks) |
-| `btrfs.chunk-node.txt` | `dump-tree -b 22036480` | **P1** node ground truth for `btrfs_chunk_root.bin` |
-| `btrfs.full-tree.txt` | `dump-tree` (all trees) | **P2** root-tree + FS-tree ground truth (root-item / inode / dir-item) |
-| `btrfs.content.sha256` | `sha256sum` on mount | **P3 file-content oracle** (`read_file` vs mount-ro sha256) |
-| `btrfs.mkfs.txt` | `mkfs.btrfs` stdout | mint provenance |
-
-## Image hash (gitignored artifact, provenance only)
-
-```
-md5  btrfs.img  58cc07f6e3e7f950152e03ee71330477
-```
-
-## Env-gated test consumption
-
-The always-on test reads the committed `btrfs_superblock.bin`. An additional
-env-gated test reads the whole image's superblock at offset 65536 when
-`BTRFS_ORACLE_IMG` points at the 512 MiB `btrfs.img` (absolute path); it skips
-cleanly when unset, so CI without the minted image is green while a local run
-with the corpus validates the offset within a whole image.
-```
-BTRFS_ORACLE_IMG=/tmp/btrfs/btrfs.img cargo test -p btrfs-core
-```
+#### btrfs_xattr_leaf.bin — raw FS_TREE leaf, 16384 bytes
+
+- **Source / Identity:** the FS_TREE leaf (logical `30457856`, `owner 5`,
+  `level 0`, 16 items) lifted out of a self-minted 120 MiB Btrfs filesystem
+  created with `mkfs.btrfs` and populated through a real Linux mount.
+- **Why only the leaf:** matches the existing `btrfs_fs_tree_leaf.bin`
+  convention — 16 KiB instead of a 120 MiB image, and the leaf is the entire
+  structure under test.
+- **Generator (verbatim)** — run inside the podman machine VM, which has a real
+  kernel and loop devices; a container cannot `mount -o loop` even with
+  `--privileged`.
+
+  ```sh
+  dd if=/dev/zero of=btrfs_xattr.img bs=1M count=120
+  mkfs.btrfs -q -f -L XATTRTEST btrfs_xattr.img
+  mount -o loop btrfs_xattr.img /mnt/btr
+  echo 'hello btrfs' > /mnt/btr/file.txt
+  setfattr -n user.small   -v 'tiny-value'         /mnt/btr/file.txt
+  setfattr -n user.comment -v 'a second attribute' /mnt/btr/file.txt
+  setfattr -n trusted.t    -v 'trusted-value'      /mnt/btr/file.txt
+  setfattr -n user.big -v "$(python3 -c 'import sys;sys.stdout.write("B"*2000)')" /mnt/btr/file.txt
+  mkdir /mnt/btr/adir
+  setfattr -n user.ondir -v 'on-a-directory' /mnt/btr/adir
+  sync; umount /mnt/btr
+  # leaf located by finding a known attribute name and rounding down to the
+  # 16384-byte nodesize boundary, then verified via its own header
+  # (owner == 5, level == 0) before extraction.
+  ```
+
+- **`SELinux` was enforcing on the build host**, so the kernel added its own
+  `security.selinux` label to both nodes. Kept deliberately: it is exactly the
+  attribute a forensic reader must not lose, and it supplies a second real
+  namespace.
+- **Contents** — 7 `XATTR_ITEM`s across two inodes, INTERLEAVED in the leaf,
+  which is what makes the per-inode scoping test meaningful:
+
+  | objectid | attribute | `data_len` |
+  |---|---|---|
+  | 257 (`file.txt`) | `user.small` | 10 |
+  | 257 | `user.comment` | 18 |
+  | 257 | `trusted.t` | 13 |
+  | 257 | `user.big` | 2000 |
+  | 257 | `security.selinux` | 37 |
+  | 258 (`adir`) | `user.ondir` | 14 |
+  | 258 | `security.selinux` | 37 |
+
+- **Ground truth:** `btrfs inspect-internal dump-tree -t 5` printed every item
+  with its `itemsize`, `data_len`, `name_len` and name; `getfattr -d -m '-'`
+  read the values back through the kernel while mounted. The oracle is
+  btrfs-progs and the Linux driver, not this crate.
+- **The 30-byte `btrfs_dir_item` prefix is confirmed by arithmetic**, not
+  assumed: `itemsize == 30 + name_len + data_len` holds for every item above
+  (50 = 30+10+10, 2038 = 30+8+2000, 83 = 30+16+37).
+- **Redistribution:** none — self-minted, no third-party data.
+- **MD5:** `97c9d4bff8c1d2aa6fa196fb8b4bf69d`
+- **Used by:** `core/tests/xattr.rs`

@@ -25,12 +25,13 @@
 use forensic_vfs::{
     Allocation, DirEntry as VfsDirEntry, DirStream, ExtentStream, FileId, FileSystem, FsKind,
     FsMeta, ImageSource, MacbTimes, NodeKind, NodeStream, ResidencyKind, SectorSizes, StreamId,
-    TimeResolution, TimeSource, TimeStamp, TimeZonePolicy, VfsError, VfsResult,
+    StreamInfo, StreamKind, TimeResolution, TimeSource, TimeStamp, TimeZonePolicy, VfsError,
+    VfsResult,
 };
 
 use crate::{
-    fs_tree_root, list_dir, read_file, read_inode, read_node, ChunkMap, DirItemType, Inode, Node,
-    Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
+    fs_tree_root, list_dir, list_xattrs, read_file, read_inode, read_node, ChunkMap, DirItemType,
+    Inode, Node, Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
 };
 
 /// A mounted btrfs image presented as a read-only [`FileSystem`].
@@ -252,8 +253,57 @@ impl FileSystem for BtrfsFs {
         })
     }
 
+    /// The file's contents, plus one entry per extended attribute.
+    ///
+    /// Btrfs keeps an attribute's value inside its `XATTR_ITEM`, so every
+    /// attribute is `Resident` — there is no out-of-line form to distinguish,
+    /// and claiming one would describe a structure the filesystem does not have.
+    ///
+    /// Names are reported exactly as stored. Btrfs holds the complete name
+    /// (`security.selinux`), so unlike the ext4 and XFS adapters nothing is
+    /// reconstructed from a namespace tag.
+    fn data_streams(&self, ino: FileId) -> VfsResult<Vec<StreamInfo>> {
+        let oid = oid_of(ino)?;
+        let size = read_inode(&self.leaf, oid).map_or(0, |i| i.size);
+        let mut out = vec![StreamInfo {
+            id: StreamId::Default,
+            name: None,
+            size,
+            residency: ResidencyKind::NonResident,
+            kind: StreamKind::Data,
+        }];
+        for (i, x) in list_xattrs(&self.leaf, oid).into_iter().enumerate() {
+            out.push(StreamInfo {
+                id: StreamId::Xattr(u16::try_from(i).unwrap_or(u16::MAX)),
+                name: Some(x.name.into_bytes()),
+                size: x.value.len() as u64,
+                residency: ResidencyKind::Resident {
+                    inline_len: u32::try_from(x.value.len()).unwrap_or(u32::MAX),
+                },
+                kind: StreamKind::Xattr,
+            });
+        }
+        Ok(out)
+    }
+
     fn read_at(&self, ino: FileId, stream: StreamId, off: u64, buf: &mut [u8]) -> VfsResult<usize> {
         let oid = oid_of(ino)?;
+        // Attributes are dispatched BEFORE the default-stream guard: that guard
+        // refuses stream kinds btrfs does not have, and attributes are one it does.
+        if let StreamId::Xattr(idx) = stream {
+            let all = list_xattrs(&self.leaf, oid);
+            let x = all.get(idx as usize).ok_or_else(|| VfsError::Unsupported {
+                layer: "btrfs xattr index",
+                scheme: format!("attribute {idx} of {}", all.len()),
+            })?;
+            let start = usize::try_from(off).unwrap_or(usize::MAX);
+            let Some(avail) = x.value.get(start..) else {
+                return Ok(0);
+            };
+            let n = avail.len().min(buf.len());
+            buf[..n].copy_from_slice(&avail[..n]);
+            return Ok(n);
+        }
         require_default_stream(stream)?;
         // btrfs-core reads a whole file (no ranged API); window the requested
         // range out of the returned bytes.

@@ -59,9 +59,10 @@ pub use extent::{
     EXTENT_DATA_KEY,
 };
 pub use fstree::{
-    fs_tree_root, list_dir, read_by_path, read_inode, DirEntry, DirItemType, FsTreeRoot, Inode,
-    Timestamp, DIR_INDEX_KEY, DIR_ITEM_KEY, FS_TREE_OBJECTID, FS_TREE_ROOT_DIR_OBJECTID,
-    INODE_ITEM_KEY, INODE_ITEM_SIZE, INODE_REF_KEY, ROOT_ITEM_KEY, TIMESTAMP_SIZE,
+    fs_tree_root, list_dir, list_xattrs, read_by_path, read_inode, DirEntry, DirItemType,
+    FsTreeRoot, Inode, Timestamp, Xattr, DIR_INDEX_KEY, DIR_ITEM_KEY, FS_TREE_OBJECTID,
+    FS_TREE_ROOT_DIR_OBJECTID, INODE_ITEM_KEY, INODE_ITEM_SIZE, INODE_REF_KEY, ROOT_ITEM_KEY,
+    TIMESTAMP_SIZE, XATTR_ITEM_KEY,
 };
 pub use node::{
     read_node, Chunk, ChunkMap, Header, KeyPtr, Node, BTRFS_HEADER_SIZE, BTRFS_ITEM_SIZE,
