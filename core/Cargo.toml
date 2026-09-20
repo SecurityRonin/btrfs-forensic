@@ -39,7 +39,7 @@ crc = { workspace = true }
 flate2 = { workspace = true }
 ruzstd = { workspace = true }
 lzo = { workspace = true }
-forensic-vfs = { version = "0.7", optional = true }
+forensic-vfs = { version = "0.9", optional = true }
 
 [lints]
 workspace = true
