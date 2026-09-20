@@ -2,22 +2,22 @@
 //!
 //! Nothing in this crate read `XATTR_ITEM` before this test, so every Btrfs
 //! image presented files with no extended attributes — indistinguishable from
-//! files that have none, which on Linux silently drops SELinux labels,
-//! capabilities and POSIX ACLs.
+//! files that have none, which on Linux silently drops `SELinux` labels,
+//! capabilities and POSIX `ACLs`.
 //!
 //! ## The oracle is btrfs-progs
 //!
-//! `tests/data/btrfs_xattr_leaf.bin` is the raw 16384-byte FS_TREE leaf lifted
+//! `tests/data/btrfs_xattr_leaf.bin` is the raw 16384-byte `FS_TREE` leaf lifted
 //! out of an image `mkfs.btrfs` created and the Linux btrfs driver populated
 //! through a real mount. `btrfs inspect-internal dump-tree -t 5` listed every
 //! item back:
 //!
-//! ```text
-//! item 8  key (257 XATTR_ITEM 95888091)   itemsize 50    data_len 10   name_len 10  name: user.small
-//! item 10 key (257 XATTR_ITEM 2425280219) itemsize 2038  data_len 2000 name_len 8   name: user.big
-//! item 12 key (257 XATTR_ITEM 3817753667) itemsize 83    data_len 37   name_len 16  name: security.selinux
-//! item 16 key (258 XATTR_ITEM 386189463)  itemsize 54    data_len 14   name_len 10  name: user.ondir
-//! ```
+//! ``text
+//! item 8  key (257 `XATTR_ITEM` 95888091)   itemsize 50    data_len 10   name_len 10  name: user.small
+//! item 10 key (257 `XATTR_ITEM` 2425280219) itemsize 2038  data_len 2000 name_len 8   name: user.big
+//! item 12 key (257 `XATTR_ITEM` 3817753667) itemsize 83    data_len 37   name_len 16  name: security.selinux
+//! item 16 key (258 `XATTR_ITEM` 386189463)  itemsize 54    data_len 14   name_len 10  name: user.ondir
+//! ``
 //!
 //! ## Two things Btrfs does differently, both load-bearing
 //!
