@@ -24,14 +24,14 @@
 
 use forensic_vfs::{
     Allocation, DirEntry as VfsDirEntry, DirStream, ExtentStream, FileId, FileSystem, FsKind,
-    FsMeta, ImageSource, MacbTimes, NodeKind, NodeStream, ResidencyKind, SectorSizes, StreamId,
-    StreamInfo, StreamKind, TimeResolution, TimeSource, TimeStamp, TimeZonePolicy, VfsError,
-    VfsResult,
+    FsMeta, HardLink, ImageSource, MacbTimes, NodeKind, NodeStream, ResidencyKind, SectorSizes,
+    StreamId, StreamInfo, StreamKind, TimeResolution, TimeSource, TimeStamp, TimeZonePolicy,
+    VfsError, VfsResult,
 };
 
 use crate::{
-    fs_tree_root, list_dir, list_xattrs, read_file, read_inode, read_node, ChunkMap, DirItemType,
-    Inode, Node, Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
+    fs_tree_root, list_dir, list_inode_refs, list_xattrs, read_file, read_inode, read_node,
+    ChunkMap, DirItemType, Inode, Node, Superblock, Timestamp, BTRFS_SUPER_INFO_OFFSET,
 };
 
 /// A mounted btrfs image presented as a read-only [`FileSystem`].
@@ -262,6 +262,25 @@ impl FileSystem for BtrfsFs {
     /// Names are reported exactly as stored. Btrfs holds the complete name
     /// (`security.selinux`), so unlike the ext4 and XFS adapters nothing is
     /// reconstructed from a namespace tag.
+    /// Every name this inode is known by, read from its `INODE_REF`
+    /// back-references rather than by walking directories.
+    ///
+    /// btrfs records one `INODE_REF` item per parent directory, each packing a
+    /// record per link inside that directory, so a hard-linked file is answered
+    /// exactly and cheaply. An inode the FS-tree leaf does not describe yields
+    /// an empty vector — the single-leaf limit documented in the module header
+    /// applies here as it does to every other lookup on this adapter.
+    fn hardlinks(&self, ino: FileId) -> VfsResult<Vec<HardLink>> {
+        let oid = oid_of(ino)?;
+        Ok(list_inode_refs(&self.leaf, oid)
+            .into_iter()
+            .map(|r| HardLink {
+                parent: FileId::Opaque(r.parent),
+                name: r.name.into_bytes(),
+            })
+            .collect())
+    }
+
     fn data_streams(&self, ino: FileId) -> VfsResult<Vec<StreamInfo>> {
         let oid = oid_of(ino)?;
         let size = read_inode(&self.leaf, oid).map_or(0, |i| i.size);
@@ -347,6 +366,7 @@ impl FileSystem for BtrfsFs {
 #[cfg(test)]
 mod tests {
     use super::BtrfsFs;
+    use crate::{list_inode_refs, Node};
     use forensic_vfs::{
         FileId, FileSystem, FsKind, ImageSource, NodeKind, StreamId, VfsError, VfsResult,
     };
@@ -748,4 +768,44 @@ mod tests {
     // `core/tests/vfs_oracle.rs` — as an integration test its body is not counted
     // by the CI coverage gate (which lacks the oracle), matching every other
     // env-gated fixture test; the always-on tests above cover the adapter itself.
+
+    /// Build a `btrfs_inode_ref` record: `index` u64, `name_len` u16, then name.
+    fn inode_ref(index: u64, name: &[u8]) -> Vec<u8> {
+        let mut v = index.to_le_bytes().to_vec();
+        v.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        v.extend_from_slice(name);
+        v
+    }
+
+    #[test]
+    fn hardlinks_maps_inode_refs_to_parent_file_ids() {
+        // Two links in dir 256 packed into ONE item, plus a third in dir 300 --
+        // the same shape the real `btrfs_hardlink_leaf.bin` fixture carries.
+        const INODE_REF_KEY: u8 = 12;
+        let mut packed = inode_ref(3, b"hardlink.txt");
+        packed.extend_from_slice(&inode_ref(5, b"target.txt"));
+        let leaf = build_leaf(
+            5,
+            &[
+                (700, INODE_REF_KEY, 256, packed),
+                (700, INODE_REF_KEY, 300, inode_ref(2, b"second_name.txt")),
+                (701, INODE_REF_KEY, 256, inode_ref(1, b"plain.txt")),
+            ],
+        );
+        let node = Node::parse(&leaf).expect("crafted leaf parses");
+        let links = list_inode_refs(&node, 700);
+        let mut got: Vec<(u64, String)> =
+            links.iter().map(|r| (r.parent, r.name.clone())).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (256, "hardlink.txt".to_string()),
+                (256, "target.txt".to_string()),
+                (300, "second_name.txt".to_string()),
+            ]
+        );
+        // A neighbouring inode's names must not leak into this one.
+        assert_eq!(list_inode_refs(&node, 701).len(), 1);
+    }
 }

@@ -1,0 +1,98 @@
+btrfs-progs v6.6.3
+fs tree key (FS_TREE ROOT_ITEM 0) 
+leaf 30441472 items 21 free space 14541 generation 7 owner FS_TREE
+leaf 30441472 flags 0x1(WRITTEN) backref revision 1
+fs uuid 75c1e193-f301-46b9-a7a7-e082f5635129
+chunk uuid 343840b7-b108-4a2d-b116-a11a89ccf638
+	item 0 key (256 INODE_ITEM 0) itemoff 16123 itemsize 160
+		generation 3 transid 0 size 68 nbytes 16384
+		block group 0 mode 40775 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1789968230.0 (2026-09-21 05:23:50)
+		ctime 1789968230.0 (2026-09-21 05:23:50)
+		mtime 1789968230.0 (2026-09-21 05:23:50)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 1 key (256 INODE_REF 256) itemoff 16111 itemsize 12
+		index 0 namelen 2 name: ..
+	item 2 key (256 DIR_ITEM 481053471) itemoff 16078 itemsize 33
+		location key (65011971 INODE_ITEM 0) type DIR
+		transid 7237954650459081728 data_len 0 name_len 3
+		name: dir
+	item 3 key (256 DIR_ITEM 890354509) itemoff 16036 itemsize 42
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 0 data_len 0 name_len 12
+		name: hardlink.txt
+	item 4 key (256 DIR_ITEM 1631245412) itemoff 15997 itemsize 39
+		location key (65011973 INODE_ITEM 0) type FILE
+		transid 0 data_len 0 name_len 9
+		name: plain.txt
+	item 5 key (256 DIR_ITEM 3797228392) itemoff 15957 itemsize 40
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 0 data_len 0 name_len 10
+		name: target.txt
+	item 6 key (256 DIR_INDEX 2) itemoff 15918 itemsize 39
+		location key (65011973 INODE_ITEM 0) type FILE
+		transid 0 data_len 0 name_len 9
+		name: plain.txt
+	item 7 key (256 DIR_INDEX 3) itemoff 15876 itemsize 42
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 458231866880 data_len 0 name_len 12
+		name: hardlink.txt
+	item 8 key (256 DIR_INDEX 4) itemoff 15843 itemsize 33
+		location key (65011971 INODE_ITEM 0) type DIR
+		transid 0 data_len 0 name_len 3
+		name: dir
+	item 9 key (256 DIR_INDEX 5) itemoff 15803 itemsize 40
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 6992063 data_len 0 name_len 10
+		name: target.txt
+	item 10 key (65011971 INODE_ITEM 0) itemoff 15643 itemsize 160
+		generation 7 transid 0 size 30 nbytes 0
+		block group 0 mode 40775 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1789968230.0 (2026-09-21 05:23:50)
+		ctime 1789968230.0 (2026-09-21 05:23:50)
+		mtime 1789968230.0 (2026-09-21 05:23:50)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 11 key (65011971 INODE_REF 256) itemoff 15630 itemsize 13
+		index 4 namelen 3 name: dir
+	item 12 key (65011971 DIR_ITEM 1413020557) itemoff 15585 itemsize 45
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 7687855008729006080 data_len 0 name_len 15
+		name: second_name.txt
+	item 13 key (65011971 DIR_INDEX 2) itemoff 15540 itemsize 45
+		location key (65011972 INODE_ITEM 0) type FILE
+		transid 7687855008729006080 data_len 0 name_len 15
+		name: second_name.txt
+	item 14 key (65011972 INODE_ITEM 0) itemoff 15380 itemsize 160
+		generation 7 transid 0 size 20 nbytes 20
+		block group 0 mode 100664 links 3 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1789968230.0 (2026-09-21 05:23:50)
+		ctime 1789968230.0 (2026-09-21 05:23:50)
+		mtime 1789968230.0 (2026-09-21 05:23:50)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 15 key (65011972 INODE_REF 256) itemoff 15338 itemsize 42
+		index 3 namelen 12 name: hardlink.txt
+		index 5 namelen 10 name: target.txt
+	item 16 key (65011972 INODE_REF 65011971) itemoff 15313 itemsize 25
+		index 2 namelen 15 name: second_name.txt
+	item 17 key (65011972 EXTENT_DATA 0) itemoff 15272 itemsize 41
+		generation 7 type 0 (inline)
+		inline extent data size 20 ram_bytes 20 compression 0 (none)
+	item 18 key (65011973 INODE_ITEM 0) itemoff 15112 itemsize 160
+		generation 7 transid 0 size 6 nbytes 6
+		block group 0 mode 100664 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1789968230.0 (2026-09-21 05:23:50)
+		ctime 1789968230.0 (2026-09-21 05:23:50)
+		mtime 1789968230.0 (2026-09-21 05:23:50)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 19 key (65011973 INODE_REF 256) itemoff 15093 itemsize 19
+		index 2 namelen 9 name: plain.txt
+	item 20 key (65011973 EXTENT_DATA 0) itemoff 15066 itemsize 27
+		generation 7 type 0 (inline)
+		inline extent data size 6 ram_bytes 6 compression 0 (none)
+total bytes 268435456
+bytes used 147456
+uuid 75c1e193-f301-46b9-a7a7-e082f5635129

@@ -463,6 +463,99 @@ fn parse_xattr_item(data: &[u8]) -> Option<(Xattr, usize)> {
     ))
 }
 
+/// Byte offsets within a `btrfs_inode_ref` record (packed, little-endian).
+mod inode_ref_off {
+    /// `__le64 index` — the directory index this name occupies.
+    pub const INDEX: usize = 0x00;
+    /// `__le16 name_len`.
+    pub const NAME_LEN: usize = 0x08;
+    /// The name bytes begin here; the record is `NAME + name_len` long.
+    pub const NAME: usize = 0x0A;
+}
+
+/// One name an inode is known by, and the directory holding it.
+///
+/// A btrfs inode with `nlink > 1` has one of these per link. This is the
+/// back-reference the filesystem stores deliberately, so the answer is a direct
+/// read rather than a directory walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InodeRef {
+    /// Objectid of the directory containing this name (the item key's offset).
+    pub parent: u64,
+    /// The directory index this name occupies within `parent`.
+    pub index: u64,
+    /// The name itself.
+    pub name: String,
+}
+
+/// List every name `objectid` is known by within this leaf.
+///
+/// An inode the leaf does not describe yields an empty vector; that is not an
+/// error. Only items keyed to `objectid` are returned — a leaf interleaves many
+/// inodes' items, so filtering on `key_type` alone would hand one file's names
+/// to another.
+///
+/// **Several names can share one item.** `INODE_REF` items are keyed by
+/// `(objectid, INODE_REF, parent_dir)`, so every link inside the *same*
+/// directory is packed into one item as consecutive `btrfs_inode_ref` records.
+/// In the reference leaf item 15 is 42 bytes holding both `hardlink.txt`
+/// (10 + 12) and `target.txt` (10 + 10). A walk that stopped at the first
+/// record would report two links where the volume has three.
+#[must_use]
+pub fn list_inode_refs(leaf: &Node, objectid: u64) -> Vec<InodeRef> {
+    let mut out = Vec::new();
+    for (key, data) in leaf.leaf_items() {
+        if key.objectid != objectid || key.key_type != INODE_REF_KEY {
+            continue;
+        }
+        let mut off = 0usize;
+        // A malformed record ENDS this item's walk: the records are packed with
+        // no terminator, so once one length is untrustworthy there is nowhere
+        // safe to resume, and continuing would emit a name assembled from the
+        // wrong bytes.
+        while let Some(rest) = data.get(off..) {
+            let Some((r, consumed)) = parse_inode_ref(rest, key.offset) else {
+                break;
+            };
+            out.push(r);
+            if consumed == 0 {
+                break;
+            }
+            off += consumed;
+        }
+    }
+    out
+}
+
+/// Parse one `btrfs_inode_ref`, returning it and the bytes it occupied.
+///
+/// `parent` comes from the item key's `offset` field, not the record: the record
+/// carries only the index and the name.
+fn parse_inode_ref(data: &[u8], parent: u64) -> Option<(InodeRef, usize)> {
+    if data.len() < inode_ref_off::NAME {
+        return None;
+    }
+    let index = le_u64(data, inode_ref_off::INDEX);
+    let name_len = le_u16(data, inode_ref_off::NAME_LEN) as usize;
+    // A zero-length name is not a valid link; emitting one would produce a
+    // nameless entry and never advance the walk.
+    if name_len == 0 {
+        return None;
+    }
+    let name_end = inode_ref_off::NAME.checked_add(name_len)?;
+    // A truncated record is refused rather than padded: a short name would be
+    // reported as the link's real name.
+    let name = data.get(inode_ref_off::NAME..name_end)?;
+    Some((
+        InodeRef {
+            parent,
+            index,
+            name: String::from_utf8_lossy(name).into_owned(),
+        },
+        name_end,
+    ))
+}
+
 /// Resolve a slash-separated `path` to `(objectid, Inode)` within an `FS_TREE`
 /// `leaf`, starting from the `FS_TREE` root directory ([`FS_TREE_ROOT_DIR_OBJECTID`]).
 ///

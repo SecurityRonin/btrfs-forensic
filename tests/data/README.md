@@ -543,3 +543,61 @@ BTRFS_ORACLE_IMG=/tmp/btrfs/btrfs.img cargo test -p btrfs-core
 - **Redistribution:** none — self-minted, no third-party data.
 - **MD5:** `97c9d4bff8c1d2aa6fa196fb8b4bf69d`
 - **Used by:** `core/tests/xattr.rs`
+
+## `btrfs_hardlink_leaf.bin` — hard-link back-references (`INODE_REF`)
+
+| | |
+|---|---|
+| **Source** | Self-minted, `btrfs-progs v6.6.3` on Linux (asgard), 2026-09-21 |
+| **Classification** | **Synthetic** (self-minted image), oracle is `btrfs inspect-internal dump-tree` — an independent implementation of the same on-disk format |
+| **Contents** | The raw 16384-byte `FS_TREE` leaf (`bytenr=30441472 owner=5 nritems=21 level=0`) |
+| **SHA-256** | `07a1b691f4a9c72e175e1ebf9f931550a173d478aeb572ac987f498659c160db` |
+| **Redistribution** | Ours; no third-party content |
+| **Used by** | `core/tests/hardlinks.rs` |
+
+Minted because **no existing btrfs fixture contained a hard link** — the older
+corpus has 9 `INODE_REF` items and not one inode named twice, so a `hardlinks`
+capability claim would have had nothing to exercise it.
+
+`mkfs.btrfs --rootdir` preserves hard links from the source tree, which avoids
+needing mount privileges:
+
+```bash
+mkdir -p root/dir
+printf 'hard-linked payload\n' > root/target.txt
+ln root/target.txt root/hardlink.txt            # second name, same directory
+ln root/target.txt root/dir/second_name.txt     # third name, different directory
+printf 'plain\n' > root/plain.txt              # single-named control
+stat -c '%n nlink=%h ino=%i' root/target.txt    # -> nlink=3
+
+truncate -s 256M btrfs_hardlink.img
+mkfs.btrfs -q --rootdir root --nodesize 16384 -L hltest btrfs_hardlink.img
+
+# FS_TREE leaf logical 30441472; METADATA chunk 30408704 -> physical 38797312,
+# so physical = 38797312 + (30441472 - 30408704) = 38830080.
+dd if=btrfs_hardlink.img bs=1 skip=38830080 count=16384 \
+   of=btrfs_hardlink_leaf.bin status=none
+
+btrfs inspect-internal dump-tree -t 5 btrfs_hardlink.img > btrfs_hardlink.fs-tree.txt
+```
+
+### Ground truth (`btrfs_hardlink.fs-tree.txt`, committed verbatim)
+
+```text
+item 15 key (65011972 INODE_REF 256)      itemoff 15338 itemsize 42
+        index 3 namelen 12 name: hardlink.txt
+        index 5 namelen 10 name: target.txt
+item 16 key (65011972 INODE_REF 65011971) itemoff 15313 itemsize 25
+        index 2 namelen 15 name: second_name.txt
+item 19 key (65011973 INODE_REF 256)      itemoff 15093 itemsize 19
+        (plain.txt — the single-named control)
+```
+
+**Item 15 is the reason this fixture exists.** One 42-byte item holds *two*
+`btrfs_inode_ref` records — `(10 + 12) + (10 + 10) = 42` — because every link
+inside the same parent directory is packed into a single item keyed
+`(objectid, INODE_REF, parent)`. A walk that stops at the first record returns
+`hardlink.txt` alone and reports two links where the volume has three. That
+mutation is verified to turn `two_names_packed_in_one_inode_ref_item_are_both_returned`
+red.
+

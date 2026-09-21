@@ -1,0 +1,7 @@
+# Byte-exact evidence fixtures: git must never translate line endings in them.
+# `core.autocrlf` defaults to TRUE on GitHub's windows-latest runners, and git
+# only scans the first 8000 bytes for a NUL before deciding a file is "text" —
+# so a binary whose first NUL falls past that window gets its LF bytes rewritten
+# and the fixture is corrupted on one platform only.
+tests/data/** -text
+fuzz/corpus/** -text
