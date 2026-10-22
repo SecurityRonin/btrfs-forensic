@@ -7,7 +7,7 @@ members = ["core", "forensic"]
 # each keeps its own `version` inline.
 #
 # `rust-version` is the CI-verified MSRV floor. It is NOT the usual fleet library
-# floor (1.75/1.80): the batteries-included pure-Rust zstd decoder (`ruzstd 0.8`)
+# floor (1.75/1.80): the batteries-included pure-Rust zstd decoder (`ruzstd 0.9.1`)
 # declares `rust-version = 1.87`, so that decoder — not our own code — dictates
 # the floor. Per the Batteries-Included policy ("MSRV yields to capability") we
 # keep the always-compiled zstd path and take the 1.87 floor rather than
@@ -35,7 +35,7 @@ crc = "3"
 # zlib: flate2 with the pure-Rust miniz_oxide backend (no C toolchain).
 flate2 = "1"
 # zstd: ruzstd, a pure-Rust decoder (no C FFI; keeps the tree unsafe-free).
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 # LZO1X: a safe, dependency-free, bounds-checked pure-Rust decompressor; btrfs's
 # per-sector framing is applied on top in extent.rs.
 lzo = "0.1"
