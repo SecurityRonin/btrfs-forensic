@@ -35,7 +35,7 @@ crc = "3"
 # zlib: flate2 with the pure-Rust miniz_oxide backend (no C toolchain).
 flate2 = "1"
 # zstd: ruzstd, a pure-Rust decoder (no C FFI; keeps the tree unsafe-free).
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 # LZO1X: a safe, dependency-free, bounds-checked pure-Rust decompressor; btrfs's
 # per-sector framing is applied on top in extent.rs.
 lzo = "0.1"
