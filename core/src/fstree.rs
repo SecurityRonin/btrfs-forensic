@@ -423,7 +423,7 @@ pub fn list_xattrs(leaf: &Node, objectid: u64) -> Vec<Xattr> {
             };
             out.push(x);
             if consumed == 0 {
-                break;
+                break; // cov:unreachable: parse_xattr_item rejects name_len == 0, so consumed >= dir_off::NAME + 1
             }
             off += consumed;
         }
@@ -519,7 +519,7 @@ pub fn list_inode_refs(leaf: &Node, objectid: u64) -> Vec<InodeRef> {
             };
             out.push(r);
             if consumed == 0 {
-                break;
+                break; // cov:unreachable: parse_inode_ref rejects name_len == 0, so consumed >= inode_ref_off::NAME + 1
             }
             off += consumed;
         }
@@ -580,4 +580,23 @@ pub fn read_by_path(leaf: &Node, path: &str) -> Option<(u64, Inode)> {
     }
 
     Some((current, inode))
+}
+
+#[cfg(test)]
+mod unit {
+    use super::{dir_off, inode_ref_off, parse_inode_ref, parse_xattr_item};
+
+    #[test]
+    fn an_xattr_record_with_a_zero_length_name_is_refused() {
+        // A full 30-byte prefix with name_len = 0 and data_len = 4.
+        let mut rec = vec![0u8; dir_off::NAME + 4];
+        rec[dir_off::DATA_LEN..dir_off::DATA_LEN + 2].copy_from_slice(&4u16.to_le_bytes());
+        assert!(parse_xattr_item(&rec).is_none());
+    }
+
+    #[test]
+    fn an_inode_ref_with_a_zero_length_name_is_refused() {
+        let rec = vec![0u8; inode_ref_off::NAME + 4]; // name_len = 0
+        assert!(parse_inode_ref(&rec, 256).is_none());
+    }
 }

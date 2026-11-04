@@ -808,4 +808,66 @@ mod tests {
         // A neighbouring inode's names must not leak into this one.
         assert_eq!(list_inode_refs(&node, 701).len(), 1);
     }
+
+    // ── extended attributes and hard links through the adapter (real leaves) ──
+
+    /// The crafted image's geometry with its FS-tree leaf swapped for a real one,
+    /// so the adapter methods run over leaves the kernel wrote (provenance:
+    /// tests/data/README.md).
+    fn with_leaf(raw: &[u8]) -> BtrfsFs {
+        let mut fs = open_crafted();
+        fs.leaf = Node::parse(raw).expect("real FS_TREE leaf parses");
+        fs
+    }
+
+    const XATTR_LEAF: &[u8] = include_bytes!("../../tests/data/btrfs_xattr_leaf.bin");
+    const HARDLINK_LEAF: &[u8] = include_bytes!("../../tests/data/btrfs_hardlink_leaf.bin");
+
+    #[test]
+    fn data_streams_lists_each_extended_attribute() {
+        let fs = with_leaf(XATTR_LEAF);
+        let streams = fs.data_streams(FileId::Opaque(257)).expect("streams");
+        assert_eq!(streams.len(), 6, "default + 5 attributes: {streams:?}");
+        assert_eq!(streams[0].id, StreamId::Default);
+        assert!(streams[1..]
+            .iter()
+            .any(|s| s.name.as_deref() == Some(&b"user.small"[..])));
+    }
+
+    #[test]
+    fn read_at_returns_an_attribute_value_and_bounds_the_offset() {
+        let fs = with_leaf(XATTR_LEAF);
+        let streams = fs.data_streams(FileId::Opaque(257)).expect("streams");
+        let small = streams
+            .iter()
+            .find(|s| s.name.as_deref() == Some(&b"user.small"[..]))
+            .expect("user.small is listed");
+        let mut buf = [0u8; 64];
+        let n = fs
+            .read_at(FileId::Opaque(257), small.id, 0, &mut buf)
+            .expect("read");
+        assert_eq!(&buf[..n], b"tiny-value");
+        let n = fs
+            .read_at(FileId::Opaque(257), small.id, 5, &mut buf)
+            .expect("read from 5");
+        assert_eq!(&buf[..n], b"value");
+        assert_eq!(
+            fs.read_at(FileId::Opaque(257), small.id, 1_000, &mut buf)
+                .expect("past end"),
+            0
+        );
+        assert!(matches!(
+            fs.read_at(FileId::Opaque(257), StreamId::Xattr(99), 0, &mut buf),
+            Err(VfsError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn hardlinks_reports_every_name_of_a_multiply_linked_inode() {
+        // The hard-linked inode has three names across two parents (dump-tree,
+        // core/tests/hardlinks.rs).
+        let fs = with_leaf(HARDLINK_LEAF);
+        let links = fs.hardlinks(FileId::Opaque(65_011_972)).expect("hardlinks");
+        assert_eq!(links.len(), 3, "{links:?}");
+    }
 }
