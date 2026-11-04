@@ -43,7 +43,7 @@ flate2 = { workspace = true }
 # manifest carries the floor.
 ruzstd = "0.9.1"
 lzo = { workspace = true }
-forensic-vfs = { version = "0.9", optional = true }
+forensic-vfs = { version = "0.10", optional = true }
 
 [lints]
 workspace = true

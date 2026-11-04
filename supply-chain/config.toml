@@ -23,7 +23,7 @@ audit-as-crates-io = false
 audit-as-crates-io = false
 
 [[exemptions.cfg-if]]
-version = "1.0.4"
+version = "1.0.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.crc]]
@@ -35,19 +35,20 @@ version = "2.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.crc32fast]]
-version = "1.5.0"
+version = "1.5.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.flate2]]
-version = "1.1.9"
+version = "1.1.10"
 criteria = "safe-to-deploy"
+
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+notes = "Already in main's lockfile but never vetted; exempted 2026-11-04 when fixing the pre-existing cargo-vet failure. Not reviewed."
 
 [[exemptions.proc-macro2]]
 version = "1.0.107"
-criteria = "safe-to-deploy"
-
-[[exemptions.quote]]
-version = "1.0.47"
 criteria = "safe-to-deploy"
 
 [[exemptions.ruzstd]]
@@ -59,21 +60,26 @@ version = "0.3.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.syn]]
-version = "3.0.2"
+version = "3.0.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.thiserror]]
-version = "2.0.19"
+version = "2.0.20"
 criteria = "safe-to-deploy"
 
 [[exemptions.thiserror-impl]]
-version = "2.0.19"
+version = "2.0.20"
 criteria = "safe-to-deploy"
 
 [[exemptions.twox-hash]]
-version = "2.1.3"
+version = "2.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]
-version = "1.0.24"
+version = "1.0.26"
 criteria = "safe-to-deploy"
+
+[[exemptions.zlib-rs]]
+version = "0.6.8"
+criteria = "safe-to-deploy"
+notes = "Already in main's lockfile but never vetted; exempted 2026-11-04 when fixing the pre-existing cargo-vet failure. Not reviewed."
