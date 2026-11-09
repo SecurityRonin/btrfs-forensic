@@ -565,6 +565,10 @@ pub struct RecoveredFile {
 /// locating `old` and `current` through the superblock roots and backup roots and
 /// passing the real chunk map.
 ///
+/// `old`, `current` and `map` are `btrfs-core` types, so `btrfs-core` is a
+/// public dependency of this crate: an incompatible `btrfs-core` changes this
+/// signature.
+///
 /// Malformed input never panics.
 #[must_use]
 pub fn recover_deleted_from_leaves(
