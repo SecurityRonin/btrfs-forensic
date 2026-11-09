@@ -55,8 +55,8 @@ pub use chunk::{
 pub use crc::{superblock_crc_status, verify_superblock_crc32c, CsumType, BTRFS_CSUM_SIZE};
 pub use error::BtrfsError;
 pub use extent::{
-    decompress_extent, read_by_path_content, read_file, read_file_from_leaf, Compression,
-    EXTENT_DATA_KEY,
+    decompress_extent, read_by_path_content, read_file, read_file_from_leaf, read_symlink,
+    read_symlink_from_leaf, Compression, EXTENT_DATA_KEY,
 };
 pub use fstree::{
     fs_tree_root, list_dir, list_inode_refs, list_xattrs, read_by_path, read_inode, DirEntry,

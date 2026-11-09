@@ -219,6 +219,85 @@ pub fn read_file_from_leaf(
     Ok(out)
 }
 
+/// Read the target of symlink `ino` from an already-parsed `FS_TREE` `leaf`.
+///
+/// A symlink is not read like a file. The kernel stores its target as one
+/// uncompressed inline extent shorter than a sector, and rejects anything else
+/// (`btrfs_symlink` in fs/btrfs/inode.c; `can_have_extent_data` in
+/// fs/btrfs/tree-checker.c). All three rules are checked before anything is
+/// read, so the bytes read are at most the inline payload, which lies inside
+/// this leaf.
+///
+/// # Errors
+///
+/// - [`BtrfsError::Truncated`] if the leaf holds no `INODE_ITEM` for `ino`.
+/// - [`BtrfsError::InvalidSymlink`] if the size is a sector or more, an extent
+///   is not inline, or the inline extent is compressed.
+pub fn read_symlink_from_leaf(
+    leaf: &Node,
+    sectorsize: u32,
+    ino: u64,
+) -> Result<Vec<u8>, BtrfsError> {
+    let size = leaf
+        .leaf_items()
+        .find(|(k, _)| k.objectid == ino && k.key_type == INODE_ITEM_KEY)
+        .map(|(_, data)| le_u64(data, crate::fstree::INODE_SIZE_OFFSET))
+        .ok_or(BtrfsError::Truncated {
+            structure: "INODE_ITEM for the requested objectid (read_symlink)",
+            need: ino as usize,
+            have: 0,
+        })?;
+    if size >= u64::from(sectorsize) {
+        return Err(BtrfsError::InvalidSymlink {
+            ino,
+            rule: "size must be below sectorsize (btrfs_symlink, fs/btrfs/inode.c)",
+            found: size,
+        });
+    }
+    let mut out = Vec::new();
+    for (_, data) in leaf
+        .leaf_items()
+        .filter(|(k, _)| k.objectid == ino && k.key_type == EXTENT_DATA_KEY)
+    {
+        let etype = u8_at(data, ext_off::TYPE);
+        if etype != EXTENT_TYPE_INLINE {
+            return Err(BtrfsError::InvalidSymlink {
+                ino,
+                rule: "every extent must be inline (can_have_extent_data, fs/btrfs/tree-checker.c)",
+                found: u64::from(etype),
+            });
+        }
+        let compression = u8_at(data, ext_off::COMPRESSION);
+        if compression != 0 {
+            return Err(BtrfsError::InvalidSymlink {
+                ino,
+                rule: "the inline extent must be uncompressed (btrfs_symlink, fs/btrfs/inode.c)",
+                found: u64::from(compression),
+            });
+        }
+        out.extend_from_slice(data.get(EXTENT_HEADER_LEN..).unwrap_or(&[]));
+    }
+    // The size is authoritative, as for a file: the inline payload is at most
+    // one leaf item and `size` is below one sector, so neither step can bomb.
+    out.resize(size as usize, 0);
+    Ok(out)
+}
+
+/// [`read_symlink_from_leaf`] over the whole image's `FS_TREE` leaf.
+///
+/// # Errors
+///
+/// As [`read_symlink_from_leaf`], plus any error locating the `FS_TREE` leaf.
+pub fn read_symlink(
+    image: &[u8],
+    sb: &Superblock,
+    map: &ChunkMap,
+    ino: u64,
+) -> Result<Vec<u8>, BtrfsError> {
+    let leaf = fs_tree_leaf(image, sb, map)?;
+    read_symlink_from_leaf(&leaf, sb.sectorsize, ino)
+}
+
 /// Read one regular/prealloc extent's bytes: translate `disk_bytenr` (logical)
 /// to a physical offset via `map`, slice the extent's compressed source, and
 /// (for a compressed extent) decompress it, then take the `[offset, offset +

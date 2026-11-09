@@ -348,8 +348,10 @@ impl FileSystem for BtrfsFs {
             // A non-symlink reads as an empty target (matches the ext4 adapter).
             return Ok(Vec::new());
         }
-        // btrfs stores a symlink target as the node's inline file content.
-        let mut target = read_file(&self.image, &self.sb, &self.map, oid).map_err(map_btrfs_err)?;
+        // btrfs stores a symlink target as one short uncompressed inline extent;
+        // read_symlink checks that before reading, so `cap` only trims the result.
+        let mut target =
+            crate::read_symlink(&self.image, &self.sb, &self.map, oid).map_err(map_btrfs_err)?;
         target.truncate(cap);
         Ok(target)
     }

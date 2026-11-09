@@ -44,4 +44,17 @@ pub enum BtrfsError {
         /// The largest value that could be legitimate (e.g. the image length).
         bound: u64,
     },
+
+    /// A symlink inode breaks a rule the kernel enforces on every btrfs
+    /// symlink, so its target cannot be read as one. Carries the inode, the
+    /// rule, and the offending value.
+    #[error("symlink inode {ino}: {rule}, found {found}")]
+    InvalidSymlink {
+        /// The symlink's objectid.
+        ino: u64,
+        /// The rule that was broken, with its kernel source.
+        rule: &'static str,
+        /// The offending value (a size, extent type or compression byte).
+        found: u64,
+    },
 }
