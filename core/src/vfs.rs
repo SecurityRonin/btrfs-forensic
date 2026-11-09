@@ -543,6 +543,11 @@ mod tests {
     /// `link` (258, a symlink whose target is its inline content), and `sub` (259,
     /// a directory). Returns the image bytes.
     fn walkable_image() -> Vec<u8> {
+        walkable_image_with(&[])
+    }
+
+    /// [`walkable_image`] with `extra` appended to the `FS_TREE` leaf's items.
+    fn walkable_image_with(extra: &[(u64, u8, u64, Vec<u8>)]) -> Vec<u8> {
         let mut img = vec![0u8; CHUNK_LEN as usize];
         img[0..NODESIZE].copy_from_slice(&build_chunk_leaf());
         img[SUPER_OFFSET..SUPER_OFFSET + SUPER_SIZE].copy_from_slice(&build_super());
@@ -560,37 +565,36 @@ mod tests {
 
         // FS_TREE leaf.
         let link_target = b"target/path";
-        let fs_leaf = build_leaf(
-            5, /* FS_TREE */
-            &[
-                // root dir 256 (dir) with three entries.
-                (256, 1, 0, inode_item(0, 0o040_755, 2, 0, 0, 500)),
-                (256, 84, 10, dir_item(257, 1 /* FT_REG */, b"note.txt")),
-                (256, 84, 20, dir_item(258, 7 /* FT_SYMLINK */, b"link")),
-                (256, 84, 30, dir_item(259, 2 /* FT_DIR */, b"sub")),
-                // note.txt 257 (regular file, inline content, otime present).
-                (257, 1, 0, inode_item(9, 0o100_644, 1, 1000, 1000, 700)),
-                (257, 108, 0, inline_extent(b"note body")),
-                // link 258 (symlink; target is its inline content, otime = 0 → born None).
-                (
-                    258,
-                    1,
-                    0,
-                    inode_item(link_target.len() as u64, 0o120_777, 1, 0, 0, 0),
-                ),
-                (258, 108, 0, inline_extent(link_target)),
-                // sub 259 (empty directory).
-                (259, 1, 0, inode_item(0, 0o040_755, 2, 0, 0, 0)),
-                // dev 260: a device node named with an UNKNOWN dir-item FT type
-                // (99 → DirItemType::Other → NodeKind::Other in read_dir), whose
-                // INODE mode is a char/block device (0o020000 → NodeKind::Device).
-                (256, 84, 40, dir_item(260, 99 /* unknown FT */, b"dev")),
-                (260, 1, 0, inode_item(0, 0o020_000, 1, 0, 0, 0)),
-                // fifo 261: a mode that classifies to none of file/dir/symlink/
-                // device (0o010000 FIFO → the inode_kind `_ => Other` arm).
-                (261, 1, 0, inode_item(0, 0o010_000, 1, 0, 0, 0)),
-            ],
-        );
+        let mut items = vec![
+            // root dir 256 (dir) with three entries.
+            (256, 1, 0, inode_item(0, 0o040_755, 2, 0, 0, 500)),
+            (256, 84, 10, dir_item(257, 1 /* FT_REG */, b"note.txt")),
+            (256, 84, 20, dir_item(258, 7 /* FT_SYMLINK */, b"link")),
+            (256, 84, 30, dir_item(259, 2 /* FT_DIR */, b"sub")),
+            // note.txt 257 (regular file, inline content, otime present).
+            (257, 1, 0, inode_item(9, 0o100_644, 1, 1000, 1000, 700)),
+            (257, 108, 0, inline_extent(b"note body")),
+            // link 258 (symlink; target is its inline content, otime = 0 → born None).
+            (
+                258,
+                1,
+                0,
+                inode_item(link_target.len() as u64, 0o120_777, 1, 0, 0, 0),
+            ),
+            (258, 108, 0, inline_extent(link_target)),
+            // sub 259 (empty directory).
+            (259, 1, 0, inode_item(0, 0o040_755, 2, 0, 0, 0)),
+            // dev 260: a device node named with an UNKNOWN dir-item FT type
+            // (99 → DirItemType::Other → NodeKind::Other in read_dir), whose
+            // INODE mode is a char/block device (0o020000 → NodeKind::Device).
+            (256, 84, 40, dir_item(260, 99 /* unknown FT */, b"dev")),
+            (260, 1, 0, inode_item(0, 0o020_000, 1, 0, 0, 0)),
+            // fifo 261: a mode that classifies to none of file/dir/symlink/
+            // device (0o010000 FIFO → the inode_kind `_ => Other` arm).
+            (261, 1, 0, inode_item(0, 0o010_000, 1, 0, 0, 0)),
+        ];
+        items.extend_from_slice(extra);
+        let fs_leaf = build_leaf(5 /* FS_TREE */, &items);
         img[FS_LEAF_LOGICAL as usize..FS_LEAF_LOGICAL as usize + fs_leaf.len()]
             .copy_from_slice(&fs_leaf);
         img
@@ -737,6 +741,50 @@ mod tests {
         assert!(fs.read_link(FileId::Opaque(257), 4096).unwrap().is_empty());
         // An absent inode reads as an empty target (no panic).
         assert!(fs.read_link(FileId::Opaque(9999), 4096).unwrap().is_empty());
+    }
+
+    /// A non-inline `EXTENT_DATA` body: type@20, `disk_bytenr`@21, `num_bytes`@45.
+    /// `disk_bytenr` 0 is a hole (zeros, no image read).
+    fn hole_extent(num_bytes: u64) -> Vec<u8> {
+        let mut d = vec![0u8; 53];
+        d[8..16].copy_from_slice(&num_bytes.to_le_bytes()); // ram_bytes
+        d[20] = 1; // regular
+        d[45..53].copy_from_slice(&num_bytes.to_le_bytes()); // num_bytes
+        d
+    }
+
+    #[test]
+    fn a_symlink_whose_extent_is_not_inline_is_refused_loud() {
+        // The kernel's tree-checker rejects it: "For a symlink, the file extent
+        // item should always be inlined" (fs/btrfs/tree-checker.c). Read as a
+        // regular file, a 64 MiB hole was materialised to yield an 11-byte
+        // "target" of NULs.
+        let fs = BtrfsFs::open(&MemSource(walkable_image_with(&[
+            (262, 1, 0, inode_item(11, 0o120_777, 1, 0, 0, 0)),
+            (262, 108, 0, hole_extent(64 * 1024 * 1024)),
+        ])))
+        .expect("open");
+        let err = fs
+            .read_link(FileId::Opaque(262), 4096)
+            .expect_err("a non-inline symlink extent must be refused");
+        assert!(err.to_string().contains("inline"), "{err}");
+    }
+
+    #[test]
+    fn a_symlink_at_least_one_sector_long_is_refused_loud() {
+        // btrfs_symlink refuses a target with `name_len >= sectorsize` with
+        // ENAMETOOLONG (fs/btrfs/inode.c); this image's sectorsize is 4096.
+        let fs = BtrfsFs::open(&MemSource(walkable_image_with(&[
+            (262, 1, 0, inode_item(4096, 0o120_777, 1, 0, 0, 0)),
+            (262, 108, 0, inline_extent(b"short")),
+        ])))
+        .expect("open");
+        let err = fs
+            .read_link(FileId::Opaque(262), 8192)
+            .expect_err("a symlink of a whole sector must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("4096"), "the error names the size: {msg}");
+        assert!(msg.contains("sectorsize"), "and the limit: {msg}");
     }
 
     #[test]
