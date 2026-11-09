@@ -156,7 +156,16 @@ pub fn read_file_from_leaf(
     let image_len = image.len() as u64;
     let logical_bound = image_len.max(LOGICAL_ALLOC_FLOOR);
     guard_alloc("inode size", size, logical_bound)?;
+    let size = size as usize;
     let mut out: Vec<u8> = Vec::new();
+    // Bytes past `size` are discarded at the end, so each extent appends only
+    // what `size` still needs: the per-extent guards bound one extent, and this
+    // bounds their sum, which many hole items in one leaf could otherwise
+    // multiply to many times `logical_bound`.
+    let append = |out: &mut Vec<u8>, bytes: &[u8]| {
+        let take = bytes.len().min(size.saturating_sub(out.len()));
+        out.extend_from_slice(&bytes[..take]);
+    };
 
     for (_file_off, data) in extents {
         let etype = u8_at(data, ext_off::TYPE);
@@ -167,7 +176,7 @@ pub fn read_file_from_leaf(
             EXTENT_TYPE_INLINE => {
                 let payload = data.get(EXTENT_HEADER_LEN..).unwrap_or(&[]);
                 let bytes = decompress_extent(compression, payload, ram_bytes, sectorsize)?;
-                out.extend_from_slice(&bytes);
+                append(&mut out, &bytes);
             }
             EXTENT_TYPE_REG | EXTENT_TYPE_PREALLOC => {
                 let disk_bytenr = le_u64(data, ext_off::DISK_BYTENR);
@@ -177,7 +186,8 @@ pub fn read_file_from_leaf(
                 if disk_bytenr == 0 {
                     // A HOLE: num_bytes zeros, no image read. Guard the count.
                     guard_alloc("hole num_bytes", num_bytes, logical_bound)?;
-                    out.resize(out.len() + num_bytes as usize, 0);
+                    let zeros = (num_bytes as usize).min(size.saturating_sub(out.len()));
+                    out.resize(out.len() + zeros, 0);
                     continue;
                 }
 
@@ -191,7 +201,7 @@ pub fn read_file_from_leaf(
                     num_bytes,
                     ram_bytes,
                 )?;
-                out.extend_from_slice(&bytes);
+                append(&mut out, &bytes);
             }
             _ => {
                 // An unknown extent type: fail loud with the offending value
@@ -205,13 +215,11 @@ pub fn read_file_from_leaf(
         }
     }
 
-    // The inode's logical size is authoritative: truncate a tail that extent
-    // rounding produced, or extend a sparse tail with zeros. `size` was already
-    // guarded against `logical_bound` above, so the resize cannot bomb.
-    let size = size as usize;
-    if out.len() > size {
-        out.truncate(size);
-    } else if out.len() < size {
+    // The inode's logical size is authoritative: extend a sparse tail with
+    // zeros (a longer result was already cut by `append`). `size` was already
+    // guarded against `logical_bound` above, so the resize cannot bomb, and the
+    // appends above never exceed it, so only a short result needs adjusting.
+    if out.len() < size {
         // A sparse tail past the last extent (NO_HOLES filesystems omit trailing
         // hole items): the file logically continues as zeros to `size`.
         out.resize(size, 0);
