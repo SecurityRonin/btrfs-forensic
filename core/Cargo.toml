@@ -43,6 +43,9 @@ flate2 = { workspace = true }
 # manifest carries the floor.
 ruzstd = "0.9.1"
 lzo = { workspace = true }
+# The read-only FileSystem contract the `vfs` adapter implements. It is a public
+# dependency of that feature: 0.1.5 shipped against 0.7, and 0.7/0.10 are
+# incompatible crates, so this move is a breaking change for `vfs` users.
 forensic-vfs = { version = "0.10", optional = true }
 
 [lints]
