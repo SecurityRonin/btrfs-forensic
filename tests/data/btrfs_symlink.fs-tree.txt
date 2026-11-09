@@ -1,0 +1,100 @@
+btrfs-progs v6.6.3
+fs tree key (FS_TREE ROOT_ITEM 0) 
+leaf 30441472 items 21 free space 12523 generation 7 owner FS_TREE
+leaf 30441472 flags 0x1(WRITTEN) backref revision 1
+fs uuid a19d7f82-48ad-4ac6-b0fa-10012518577c
+chunk uuid 9eb0984f-33f7-4e0a-b766-846a41efcac1
+	item 0 key (256 INODE_ITEM 0) itemoff 16123 itemsize 160
+		generation 3 transid 0 size 24 nbytes 16384
+		block group 0 mode 40775 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1794214443.0 (2026-11-09 08:54:03)
+		ctime 1794214443.0 (2026-11-09 08:54:03)
+		mtime 1794214443.0 (2026-11-09 08:54:03)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 1 key (256 INODE_REF 256) itemoff 16111 itemsize 12
+		index 0 namelen 2 name: ..
+	item 2 key (256 DIR_ITEM 481053471) itemoff 16078 itemsize 33
+		location key (54002675 INODE_ITEM 0) type DIR
+		transid 0 data_len 0 name_len 3
+		name: dir
+	item 3 key (256 DIR_ITEM 821257885) itemoff 16044 itemsize 34
+		location key (54002678 INODE_ITEM 0) type SYMLINK
+		transid 0 data_len 0 name_len 4
+		name: long
+	item 4 key (256 DIR_ITEM 2804794920) itemoff 16009 itemsize 35
+		location key (54002677 INODE_ITEM 0) type SYMLINK
+		transid 0 data_len 0 name_len 5
+		name: short
+	item 5 key (256 DIR_INDEX 2) itemoff 15975 itemsize 34
+		location key (54002678 INODE_ITEM 0) type SYMLINK
+		transid 0 data_len 0 name_len 4
+		name: long
+	item 6 key (256 DIR_INDEX 3) itemoff 15942 itemsize 33
+		location key (54002675 INODE_ITEM 0) type DIR
+		transid 0 data_len 0 name_len 3
+		name: dir
+	item 7 key (256 DIR_INDEX 4) itemoff 15907 itemsize 35
+		location key (54002677 INODE_ITEM 0) type SYMLINK
+		transid 0 data_len 0 name_len 5
+		name: short
+	item 8 key (54002675 INODE_ITEM 0) itemoff 15747 itemsize 160
+		generation 7 transid 0 size 16 nbytes 0
+		block group 0 mode 40775 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1794214443.0 (2026-11-09 08:54:03)
+		ctime 1794214443.0 (2026-11-09 08:54:03)
+		mtime 1794214443.0 (2026-11-09 08:54:03)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 9 key (54002675 INODE_REF 256) itemoff 15734 itemsize 13
+		index 3 namelen 3 name: dir
+	item 10 key (54002675 DIR_ITEM 3956591618) itemoff 15696 itemsize 38
+		location key (54002676 INODE_ITEM 0) type FILE
+		transid 106 data_len 0 name_len 8
+		name: file.txt
+	item 11 key (54002675 DIR_INDEX 2) itemoff 15658 itemsize 38
+		location key (54002676 INODE_ITEM 0) type FILE
+		transid 106 data_len 0 name_len 8
+		name: file.txt
+	item 12 key (54002676 INODE_ITEM 0) itemoff 15498 itemsize 160
+		generation 7 transid 0 size 3 nbytes 3
+		block group 0 mode 100664 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1794214443.0 (2026-11-09 08:54:03)
+		ctime 1794214443.0 (2026-11-09 08:54:03)
+		mtime 1794214443.0 (2026-11-09 08:54:03)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 13 key (54002676 INODE_REF 54002675) itemoff 15480 itemsize 18
+		index 2 namelen 8 name: file.txt
+	item 14 key (54002676 EXTENT_DATA 0) itemoff 15456 itemsize 24
+		generation 7 type 0 (inline)
+		inline extent data size 3 ram_bytes 3 compression 0 (none)
+	item 15 key (54002677 INODE_ITEM 0) itemoff 15296 itemsize 160
+		generation 7 transid 0 size 12 nbytes 13
+		block group 0 mode 120777 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1794214443.0 (2026-11-09 08:54:03)
+		ctime 1794214443.0 (2026-11-09 08:54:03)
+		mtime 1794214443.0 (2026-11-09 08:54:03)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 16 key (54002677 INODE_REF 256) itemoff 15281 itemsize 15
+		index 4 namelen 5 name: short
+	item 17 key (54002677 EXTENT_DATA 0) itemoff 15247 itemsize 34
+		generation 7 type 0 (inline)
+		inline extent data size 13 ram_bytes 13 compression 0 (none)
+	item 18 key (54002678 INODE_ITEM 0) itemoff 15087 itemsize 160
+		generation 7 transid 0 size 2003 nbytes 2004
+		block group 0 mode 120777 links 1 uid 1003 gid 1003 rdev 0
+		sequence 0 flags 0x0(none)
+		atime 1794214443.0 (2026-11-09 08:54:03)
+		ctime 1794214443.0 (2026-11-09 08:54:03)
+		mtime 1794214443.0 (2026-11-09 08:54:03)
+		otime 0.0 (1970-01-01 00:00:00)
+	item 19 key (54002678 INODE_REF 256) itemoff 15073 itemsize 14
+		index 2 namelen 4 name: long
+	item 20 key (54002678 EXTENT_DATA 0) itemoff 13048 itemsize 2025
+		generation 7 type 0 (inline)
+		inline extent data size 2004 ram_bytes 2004 compression 0 (none)
+total bytes 268435456
+bytes used 147456
+uuid a19d7f82-48ad-4ac6-b0fa-10012518577c

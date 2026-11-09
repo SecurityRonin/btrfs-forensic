@@ -469,6 +469,8 @@ tests via `BTRFS_DEL_ORACLE`.
 | `btrfs.full-tree.txt` | `dump-tree` (all trees) | **P2** root-tree + FS-tree ground truth (root-item / inode / dir-item) |
 | `btrfs.content.sha256` | `sha256sum` on mount | **P3 file-content oracle** (`read_file` vs mount-ro sha256) |
 | `btrfs.mkfs.txt` | `mkfs.btrfs` stdout | mint provenance |
+| `btrfs_symlink_leaf.bin` (sha256 `02d84c99bd4812458fc492cd393eec6e9425566b36f70c95e825fb406c659d87`, 16384 B) | `dd skip=38830080 count=16384` | always-on symlink-target test (`core/tests/symlinks.rs`) |
+| `btrfs_symlink.fs-tree.txt` | `dump-tree -t 5` | ground truth for `btrfs_symlink_leaf.bin` |
 
 ## Image hash (gitignored artifact, provenance only)
 
@@ -601,3 +603,55 @@ inside the same parent directory is packed into a single item keyed
 mutation is verified to turn `two_names_packed_in_one_inode_ref_item_are_both_returned`
 red.
 
+
+## `btrfs_symlink_leaf.bin` — symlink targets (inline `EXTENT_DATA`)
+
+| | |
+|---|---|
+| **Source** | Self-minted, `btrfs-progs v6.6.3` on Linux (asgard), 2026-11-09 |
+| **Classification** | **Synthetic** (self-minted image). Oracles: the `ln -s` targets in the source directory, read back with `os.readlink` (the host filesystem, independent of btrfs), and `btrfs inspect-internal dump-tree` |
+| **Contents** | The raw 16384-byte `FS_TREE` leaf (`bytenr=30441472 owner=5 nritems=21 level=0`); sectorsize 4096 |
+| **SHA-256** | `02d84c99bd4812458fc492cd393eec6e9425566b36f70c95e825fb406c659d87` |
+| **Redistribution** | Ours; no third-party content |
+| **Used by** | `core/tests/symlinks.rs` |
+
+Minted because **no existing btrfs fixture contained a symlink**, so the
+kernel's symlink rules that `read_symlink_from_leaf` enforces (inline only,
+uncompressed, shorter than a sector) had nothing real to be checked against: a
+rule that rejected genuine symlinks would have passed every crafted test.
+
+```bash
+mkdir -p root/dir
+printf 'hi\n' > root/dir/file.txt
+ln -s dir/file.txt root/short                                        # 12 bytes
+ln -s "$(python3 -c 'print("d/"*1000+"end")')" root/long             # 2003 bytes
+python3 -c "import os;print(len(os.readlink('root/short')),len(os.readlink('root/long')))"  # -> 12 2003
+
+truncate -s 256M btrfs_symlink.img
+mkfs.btrfs -q --rootdir root --nodesize 16384 -L symtest btrfs_symlink.img
+
+# FS_TREE leaf at logical 30441472, inside the METADATA chunk at logical
+# 30408704 -> physical 38797312 (dump-tree -t chunk), so physical 38830080.
+dd if=btrfs_symlink.img bs=1 skip=38830080 count=16384 \
+   of=btrfs_symlink_leaf.bin status=none
+
+btrfs inspect-internal dump-tree -t 5 btrfs_symlink.img > btrfs_symlink.fs-tree.txt
+```
+
+### Ground truth (`btrfs_symlink.fs-tree.txt`, committed verbatim)
+
+```text
+item 15 key (54002677 INODE_ITEM 0)  size 12 nbytes 13            (short)
+item 17 key (54002677 EXTENT_DATA 0) inline extent data size 13 ram_bytes 13 compression 0 (none)
+item 18 key (54002678 INODE_ITEM 0)  size 2003 nbytes 2004        (long)
+item 20 key (54002678 EXTENT_DATA 0) inline extent data size 2004 ram_bytes 2004 compression 0 (none)
+```
+
+btrfs-progs stores a trailing NUL in each payload (13 bytes for a 12-byte
+target). The inode size is the target length, which is what the reader returns.
+Setting the `short` extent's compression byte to 1 is verified to turn
+`a_compressed_symlink_extent_is_refused_loud` red when the compression check is
+removed.
+
+This is btrfs-progs output, not kernel output: it shows the rules accept what
+an independent writer of the format produces, not what the kernel itself writes.
